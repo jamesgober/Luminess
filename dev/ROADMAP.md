@@ -51,10 +51,10 @@ The rebuild. Nothing of 0.1's API remains.
 
 ## 0.6.0: methods and filters
 
-- [ ] Method calls with arguments, declared in the schema and checked at compile time: `variations.options("size")`, `money.format("EUR")`.
-- [ ] Application filters registered on the builder, typed, and checked like fields.
-- [ ] More built-in filters: `truncate`, `join`, `first`, `last`, `replace`, `date` (formatting a Unix time), `number` (grouping).
-- [ ] `{% set name = expr %}` for a local value.
+- [x] Method calls with arguments, declared in the schema (`SchemaBuilder::method`) and checked at compile time: `variations.options("size")`; answered by `View::call`, which may return borrowed values or computed text (`Computed`).
+- [x] Application filters registered on the builder (`Builder::filter`), typed, and checked like fields.
+- [x] More built-in filters: `truncate`, `join`, `first`, `last`, `replace`, `date` (formatting a Unix time), `number` (grouping).
+- [x] `{% set name = expr %}` for a local value, scoped to its block.
 
 ## 0.7.0: performance
 

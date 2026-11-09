@@ -15,6 +15,14 @@ pub(crate) struct Expr {
     pub at: usize,
 }
 
+/// One segment of a path: a name, and arguments when it is a method call.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Seg {
+    pub name: String,
+    pub at: usize,
+    pub args: Option<Vec<Expr>>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CmpOp {
     Eq,
@@ -27,8 +35,8 @@ pub(crate) enum CmpOp {
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum ExprKind {
-    /// `a.b.c`: each segment with its offset.
-    Path(Vec<(String, usize)>),
+    /// `a.b.c` or `a.b(1, "x")`: each segment, with arguments when called.
+    Path(Vec<Seg>),
     Str(String),
     Int(i64),
     Float(f64),
@@ -58,6 +66,12 @@ pub(crate) enum Node {
         list: Expr,
         body: Vec<Node>,
         otherwise: Option<Vec<Node>>,
+    },
+    /// `{% set name = value %}`.
+    Set {
+        name: String,
+        name_at: usize,
+        value: Expr,
     },
     Include {
         name: String,
@@ -125,6 +139,7 @@ enum ET {
     RParen,
     Comma,
     Cmp(CmpOp),
+    Assign,
 }
 
 /// Tokenizes the inside of a tag. `base` is the tag's offset in the source.
@@ -147,6 +162,7 @@ fn etokens(src: &str, base: usize) -> Result<Vec<(ET, usize)>, ParseError> {
             b')' => (ET::RParen, 1),
             b',' => (ET::Comma, 1),
             b'=' if two(b'=') => (ET::Cmp(CmpOp::Eq), 2),
+            b'=' => (ET::Assign, 1),
             b'!' if two(b'=') => (ET::Cmp(CmpOp::Ne), 2),
             b'<' if two(b'=') => (ET::Cmp(CmpOp::Le), 2),
             b'>' if two(b'=') => (ET::Cmp(CmpOp::Ge), 2),
@@ -331,23 +347,11 @@ impl EP {
             let Some((ET::Ident(name), _)) = self.bump() else {
                 return err(at, "expected a filter name after `|`");
             };
-            let mut args = Vec::new();
-            if self.peek() == Some(&ET::LParen) {
-                self.pos += 1;
-                if self.peek() == Some(&ET::RParen) {
-                    self.pos += 1;
-                } else {
-                    loop {
-                        args.push(self.expr()?);
-                        match self.bump() {
-                            Some((ET::Comma, _)) => {}
-                            Some((ET::RParen, _)) => break,
-                            Some((_, a)) => return err(a, "expected `,` or `)`"),
-                            None => return err(self.end, "expected `)`"),
-                        }
-                    }
-                }
-            }
+            let args = if self.peek() == Some(&ET::LParen) {
+                self.args()?
+            } else {
+                Vec::new()
+            };
             base = Expr {
                 kind: ExprKind::Filter {
                     base: Box::new(base),
@@ -358,6 +362,35 @@ impl EP {
             };
         }
         Ok(base)
+    }
+
+    /// `( expr, ... )`, with the `(` next.
+    fn args(&mut self) -> Result<Vec<Expr>, ParseError> {
+        self.pos += 1;
+        let mut args = Vec::new();
+        if self.peek() == Some(&ET::RParen) {
+            self.pos += 1;
+            return Ok(args);
+        }
+        loop {
+            args.push(self.expr()?);
+            match self.bump() {
+                Some((ET::Comma, _)) => {}
+                Some((ET::RParen, _)) => return Ok(args),
+                Some((_, a)) => return err(a, "expected `,` or `)`"),
+                None => return err(self.end, "expected `)`"),
+            }
+        }
+    }
+
+    /// One path segment's call arguments, if `(` follows.
+    fn seg(&mut self, name: String, at: usize) -> Result<Seg, ParseError> {
+        let args = if self.peek() == Some(&ET::LParen) {
+            Some(self.args()?)
+        } else {
+            None
+        };
+        Ok(Seg { name, at, args })
     }
 
     fn primary(&mut self) -> Result<Expr, ParseError> {
@@ -393,12 +426,12 @@ impl EP {
                 }),
                 "and" | "or" | "not" | "in" => err(at, format!("expected a value, found `{w}`")),
                 _ => {
-                    let mut segs = vec![(w, at)];
+                    let mut segs = vec![self.seg(w, at)?];
                     while self.peek() == Some(&ET::Dot) {
                         self.pos += 1;
                         let sat = self.at();
                         match self.bump() {
-                            Some((ET::Ident(n), _)) => segs.push((n, sat)),
+                            Some((ET::Ident(n), _)) => segs.push(self.seg(n, sat)?),
                             _ => return err(sat, "expected a field name after `.`"),
                         }
                     }
@@ -435,6 +468,7 @@ fn describe(t: &ET) -> String {
         ET::RParen => "`)`".into(),
         ET::Comma => "`,`".into(),
         ET::Cmp(_) => "a comparison".into(),
+        ET::Assign => "`=`".into(),
     }
 }
 
@@ -721,6 +755,26 @@ impl P<'_> {
                     _ => err(rest_off, "expected `endblock` or `endblock name`"),
                 }
             }
+            "set" => {
+                let toks = etokens(rest, rest_off)?;
+                match toks.as_slice() {
+                    [(ET::Ident(n), name_at), (ET::Assign, _), (_, value_at), ..]
+                        if !matches!(
+                            n.as_str(),
+                            "loop" | "true" | "false" | "and" | "or" | "not" | "in"
+                        ) =>
+                    {
+                        let value = parse_expr(&self.src[*value_at..inner.end], *value_at)?;
+                        nodes.push(Node::Set {
+                            name: n.clone(),
+                            name_at: *name_at,
+                            value,
+                        });
+                        Ok(None)
+                    }
+                    _ => err(rest_off, "expected `set name = value`"),
+                }
+            }
             "elif" => Ok(Some(Stop::Elif(parse_expr(rest, rest_off)?, at))),
             "else" => no_args("else").map(|()| Some(Stop::Else(at))),
             "endif" => no_args("endif").map(|()| Some(Stop::EndIf(at))),
@@ -732,7 +786,7 @@ impl P<'_> {
                 at,
                 "unknown statement `end`; close with `endif`, `endfor`, or `endtry`",
             ),
-            "macro" | "set" => err(at, format!("`{word}` is not supported yet")),
+            "macro" => err(at, format!("`{word}` is not supported yet")),
             other => err(at, format!("unknown statement `{other}`")),
         }
     }

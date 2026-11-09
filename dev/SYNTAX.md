@@ -119,11 +119,24 @@ theme for `| raw` to review every unescaped value.
 | `upper`, `lower` | case conversion |
 | `trim` | remove leading and trailing whitespace |
 | `length` | the number of items in a list or characters in a text |
+| `truncate(n)` | the first `n` characters, then `...` |
+| `join(sep)` | a list's items with `sep` between them |
+| `first`, `last` | a list's first or last item |
+| `replace(from, to)` | text with every `from` replaced |
+| `date(format)` | a Unix time (seconds, UTC): `%Y %m %d %H %M %S %b %B %%` |
+| `number` | digits in groups of three: `1,234,567` |
 | `raw` | unescaped output (see section 6) |
 | `fallback("text")` | for a block that renders itself: the text written when it fails |
 
 Filters chain: `{{ post.title | trim | upper }}`. An application can register
 its own filters; they are checked at compile time like fields.
+
+Methods: a schema may declare methods with typed parameters, called with
+parentheses: `{{ variations.options("size") }}`, `{{ variations.cheapest() }}`.
+Arguments are checked at compile time.
+
+Local values: `{% set name = expr %}` names a value until the end of the block
+it is in (the body of an `if`, `for`, `block`, or the template).
 
 ## 8. Includes and layouts
 
