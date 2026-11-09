@@ -694,6 +694,6 @@ macro_rules! view {
         $crate::Kind::list($crate::view!(@kind $k $(( $($arg)* ))?))
     };
 
-    (@value $e:expr, html) => { $crate::view::__html($crate::ToValue::to_value(&$e)) };
+    (@value $e:expr, html) => { $crate::__html($crate::ToValue::to_value(&$e)) };
     (@value $e:expr, $other:ident) => { $crate::ToValue::to_value(&$e) };
 }

@@ -51,7 +51,7 @@ fuzz_target!(|data: &[u8]| {
     assert!(!oc["<b onclick=\"f(".len()..oc.len() - ")\">".len()].contains('"'));
     let css = r("css");
     let inner = &css["<style>a { b: ".len()..css.len() - "; }</style>".len()];
-    assert!(!inner.contains([';', '}', '<', '(', ':']));
+    assert!(!inner.contains([';', '}', '<', ':']) && !inner.contains("/*"));
     let cssq = r("cssq");
     let inner = &cssq["<style>a { b: '".len()..cssq.len() - "'; }</style>".len()];
     assert!(inner.chars().all(|c| c.is_ascii_alphanumeric() || c == ' ' || c == char::from(92)));

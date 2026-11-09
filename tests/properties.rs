@@ -278,7 +278,7 @@ proptest! {
         } else {
             prop_assert_eq!(inner, escape::BLOCKED_CSS);
         }
-        let escapes = inner.contains([';', '}', '<', '(', '"', '\'', '\\', ':']);
+        let escapes = inner.contains([';', '}', '<', '"', '\'', '\\', ':']) || inner.contains("/*");
         prop_assert!(!escapes, "{inner}");
     }
 }
