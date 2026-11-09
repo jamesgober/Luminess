@@ -137,17 +137,30 @@ fn themes_render_error_pages() {
     let theme = Theme::new(pages.clone()).with_error_pages(errors);
     assert_eq!(render(&theme, "home", 1 << 20).unwrap(), "Tom &amp; Jerry");
 
-    // ErrorPage has no public constructor in web-net 0.8 yet, so the
-    // error pages are checked through the error engine directly.
-    let errors = theme.error_pages().unwrap();
-    let view = ErrorView {
-        status: 404,
-        title: "Not Found".into(),
-        message: "x".into(),
-        reference: "ref-<1>".into(),
-    };
-    assert_eq!(
-        errors.render_to_string("error/404", &view).unwrap(),
-        "<h1>Not here</h1><p>ref-&lt;1&gt;</p>"
+    // A status with its own template.
+    let mut buf = Vec::new();
+    let p404 = web_net::ErrorPage::new(404, "Not Found", "Nothing here.", "ref-<1>");
+    assert!(
+        theme
+            .error_page(&p404, &mut Output::new(&mut buf, 1 << 20))
+            .unwrap()
     );
+    assert_eq!(buf, b"<h1>Not here</h1><p>ref-&lt;1&gt;</p>");
+    // Any other status falls back to `error`.
+    buf.clear();
+    let p500 = web_net::ErrorPage::new(500, "Server Error", "Sorry.", "r2");
+    assert!(
+        theme
+            .error_page(&p500, &mut Output::new(&mut buf, 1 << 20))
+            .unwrap()
+    );
+    assert_eq!(buf, b"<h1>500 Server Error</h1>");
+    // Without error templates, web-net's built-in page is used.
+    buf.clear();
+    assert!(
+        !Theme::new(pages)
+            .error_page(&p500, &mut Output::new(&mut buf, 1 << 20))
+            .unwrap()
+    );
+    assert!(buf.is_empty());
 }

@@ -379,7 +379,7 @@ use luminess::{Engine, web::{ErrorView, Theme}};
 
 let pages = Engine::<Page>::builder().directory("themes/default", "html")?.build()?;
 let errors = Engine::<ErrorView>::builder().directory("themes/default/errors", "html")?.build()?;
-let app = web_net::App::builder(gate).render(Theme::new(pages).with_error_pages(errors));
+let app = web_net::App::with_gate(gate).render(Theme::new(pages).with_error_pages(errors));
 ```
 
 Route templates are resolved when the app is built, so a missing template

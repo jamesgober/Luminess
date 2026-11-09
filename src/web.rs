@@ -26,6 +26,9 @@
 //! let mut out = web_net::Output::new(&mut buf, 1 << 20);
 //! theme.render(home, &Page { title: "Hi".into() }, &mut out)?;
 //! assert_eq!(buf, b"<h1>Hi</h1>");
+//!
+//! // Handing it to a web-net app.
+//! let _app = web_net::App::builder().render(theme);
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 

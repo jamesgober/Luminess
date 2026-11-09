@@ -339,7 +339,9 @@ struct Set {
     filters: Arc<[Arc<dyn FilterFn>]>,
     max_output: usize,
     /// For each name registered with the engine (`Engine::register`), its
-    /// program in this set, if the set has it.
+    /// program in this set, if the set has it. Read only by the `web-net`
+    /// integration.
+    #[cfg_attr(not(feature = "web-net"), allow(dead_code))]
     ids: Box<[Option<usize>]>,
 }
 
