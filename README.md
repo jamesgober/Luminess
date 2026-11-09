@@ -31,7 +31,7 @@ A template engine for Rust that compiles once, at startup, against typed views.
 
 ```toml
 [dependencies]
-luminess = "0.7"
+luminess = "0.8"
 ```
 
 MSRV: Rust 1.85.
@@ -299,8 +299,34 @@ flight finishes on the set it started with.
   nav:2:4: unknown filter `uper`, did you mean `upper`?; the filters are default, upper, lower, trim, length, raw
 ```
 
-`CompileError::diagnostics` gives each one with its template, line, and
-column.
+`CompileError::diagnostics` gives each one with its template, line,
+column, and source line. `CompileError::report` writes them in the style of
+compiler errors, with a caret under the column:
+
+```text
+error: `page` (page) has no field `titel`, did you mean `title`?
+ --> home:1:13
+  |
+1 | <h1>{{ page.titel }}</h1>
+  |             ^
+```
+
+`CompileError::to_html` gives the same as an escaped `<pre>` block for a
+development error page (never for visitors: it shows template source).
+`Builder::check` compiles a theme and keeps nothing, for an editor or CI.
+
+## Limits
+
+| Limit | Default | Set with |
+|---|---|---|
+| bytes one render may write | unlimited | `Builder::max_output` |
+| bytes in one template source | 1 MiB | `Builder::max_template_size` |
+| nesting of statements and expressions | 64 | fixed |
+| nesting of includes, length of `extends` chains | 8 each | fixed |
+| compiled size of one template with its includes | about 1 million nodes | fixed |
+
+A render that passes `max_output` stops, removes what it wrote, and fails with
+`RenderErrorKind::TooLarge`.
 
 ## Performance
 

@@ -6,6 +6,24 @@ All notable changes to `luminess` are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-08
+
+Diagnostics and limits.
+
+### Added
+
+- `CompileError::report`: every problem in the style of compiler errors,
+  with the source line and a caret under the column.
+- `CompileError::to_html`: the report as an escaped `<pre>` block for
+  development error pages.
+- `Diagnostic::source_line`.
+- `Builder::max_output(bytes)`: a render that would write more stops,
+  removes its output, and fails with the new `RenderErrorKind::TooLarge`.
+- `Builder::max_template_size(bytes)` (1 MiB by default): a larger source is
+  a compile error.
+- `Builder::check`: compiles every template and reports the errors without
+  consuming the builder or keeping the result.
+
 ## [0.7.0] - 2026-11-08
 
 Performance.

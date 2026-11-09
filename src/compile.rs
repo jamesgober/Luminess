@@ -81,6 +81,7 @@ pub(crate) enum Step {
 }
 
 /// An application filter's signature, checked at compile time.
+#[derive(Clone)]
 pub(crate) struct FilterSig {
     pub name: Box<str>,
     pub params: Box<[Kind]>,

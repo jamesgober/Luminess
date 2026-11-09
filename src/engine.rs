@@ -47,6 +47,8 @@ use crate::{
 #[must_use]
 pub struct Builder<V> {
     schema: Schema,
+    max_output: usize,
+    max_template: usize,
     sources: Vec<(String, String, Option<Schema>)>,
     filters: Vec<(FilterSig, Arc<dyn FilterFn>)>,
     _view: PhantomData<fn(&V)>,
@@ -77,6 +79,8 @@ impl<V: View> Builder<V> {
     pub fn new(schema: Schema) -> Self {
         Self {
             schema,
+            max_output: usize::MAX,
+            max_template: DEFAULT_MAX_TEMPLATE,
             sources: Vec::new(),
             filters: Vec::new(),
             _view: PhantomData,
@@ -101,6 +105,34 @@ impl<V: View> Builder<V> {
         self.sources
             .push((name.into(), source.into(), Some(schema)));
         self
+    }
+
+    /// Sets the most bytes one render may write. A render that would pass
+    /// it stops, removes what it wrote, and fails with
+    /// [`RenderErrorKind::TooLarge`](crate::RenderErrorKind::TooLarge).
+    /// Unlimited by default.
+    pub fn max_output(mut self, bytes: usize) -> Self {
+        self.max_output = bytes;
+        self
+    }
+
+    /// Sets the largest template source the builder accepts, in bytes; a
+    /// larger one is a compile error. 1 MiB by default.
+    pub fn max_template_size(mut self, bytes: usize) -> Self {
+        self.max_template = bytes;
+        self
+    }
+
+    /// Compiles every template and reports the errors, keeping nothing:
+    /// for checking a theme in an editor or in CI.
+    ///
+    /// # Errors
+    ///
+    /// As [`Builder::compile`].
+    pub fn check(&self) -> Result<(), CompileError> {
+        let sources = self.sources.clone();
+        let sigs: Vec<FilterSig> = self.filters.iter().map(|(s, _)| s.clone()).collect();
+        Self::compile_parts(&self.schema, sources, &sigs, self.max_template).map(|_| ())
     }
 
     /// Adds an application filter. `params` are the kinds of its arguments
@@ -197,36 +229,57 @@ impl<V: View> Builder<V> {
     ///
     /// Every problem in every template, with names, lines, and columns.
     pub fn compile(self) -> Result<Templates<V>, CompileError> {
-        let sources: Vec<Source> = self
-            .sources
+        let (sigs, fns): (Vec<FilterSig>, Vec<Arc<dyn FilterFn>>) =
+            self.filters.into_iter().unzip();
+        let (names, programs) =
+            Self::compile_parts(&self.schema, self.sources, &sigs, self.max_template)?;
+        Ok(Templates {
+            set: Arc::new(Set {
+                names,
+                programs,
+                filters: fns.into_boxed_slice(),
+                max_output: self.max_output,
+            }),
+            _view: PhantomData,
+        })
+    }
+
+    fn compile_parts(
+        schema: &Schema,
+        sources: Vec<(String, String, Option<Schema>)>,
+        sigs: &[FilterSig],
+        max_template: usize,
+    ) -> Result<(Names, Vec<Program>), CompileError> {
+        let sources: Vec<Source> = sources
             .into_iter()
-            .map(|(name, src, schema)| {
-                let ast = parse::parse(&src);
+            .map(|(name, src, own)| {
+                let ast = if src.len() > max_template {
+                    Err(parse::ParseError {
+                        at: 0,
+                        msg: format!(
+                            "the template is {} bytes, past the limit of {max_template}",
+                            src.len()
+                        ),
+                    })
+                } else {
+                    parse::parse(&src)
+                };
                 Source {
                     name: name.into_boxed_str(),
                     src: src.into_boxed_str(),
-                    schema: schema.unwrap_or_else(|| self.schema.clone()),
+                    schema: own.unwrap_or_else(|| schema.clone()),
                     ast,
                 }
             })
             .collect();
-        let (sigs, fns): (Vec<FilterSig>, Vec<Arc<dyn FilterFn>>) =
-            self.filters.into_iter().unzip();
-        match compile::compile_all(&sources, &sigs) {
+        match compile::compile_all(&sources, sigs) {
             Ok(programs) => {
                 let mut names =
                     Names::with_capacity_and_hasher(sources.len(), BuildHasherDefault::default());
                 for (i, s) in sources.into_iter().enumerate() {
                     let _ = names.insert(s.name, i);
                 }
-                Ok(Templates {
-                    set: Arc::new(Set {
-                        names,
-                        programs,
-                        filters: fns.into_boxed_slice(),
-                    }),
-                    _view: PhantomData,
-                })
+                Ok((names, programs))
             }
             Err(diags) => Err(CompileError::new(
                 diags
@@ -283,7 +336,11 @@ struct Set {
     names: Names,
     programs: Vec<Program>,
     filters: Box<[Arc<dyn FilterFn>]>,
+    max_output: usize,
 }
+
+/// The default for [`Builder::max_template_size`].
+const DEFAULT_MAX_TEMPLATE: usize = 1 << 20;
 
 /// A compiled template set. Cloning is cheap, and a clone keeps rendering the
 /// same templates while an [`Engine`] swaps in new ones.
@@ -317,15 +374,7 @@ impl<V: View> Templates<V> {
     /// [`RenderErrorKind::NotFound`](crate::RenderErrorKind::NotFound) when no
     /// template has that name. Nothing is written then.
     pub fn render(&self, name: &str, view: &V, out: &mut Vec<u8>) -> Result<Rendered, RenderError> {
-        match self.set.names.get(name) {
-            Some(&i) => Ok(render::run(
-                &self.set.programs[i],
-                &self.set.filters,
-                view,
-                out,
-            )),
-            None => Err(RenderError::not_found(name)),
-        }
+        self.set.render(name, view, out)
     }
 
     /// Renders into a new string.
@@ -582,9 +631,10 @@ impl Set {
         view: &dyn View,
         out: &mut Vec<u8>,
     ) -> Result<Rendered, RenderError> {
-        match self.names.get(name) {
-            Some(&i) => Ok(render::run(&self.programs[i], &self.filters, view, out)),
-            None => Err(RenderError::not_found(name)),
-        }
+        let Some(&i) = self.names.get(name) else {
+            return Err(RenderError::not_found(name));
+        };
+        render::run(&self.programs[i], &self.filters, view, out, self.max_output)
+            .ok_or_else(|| RenderError::too_large(name, self.max_output))
     }
 }

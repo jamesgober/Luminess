@@ -103,15 +103,22 @@ struct Run<'a, 'o> {
     scratch: String,
     fallbacks: u32,
     failures: Vec<Failed>,
+    /// Where this render's output starts, and the most it may write.
+    start: usize,
+    limit: usize,
+    /// The limit was passed: stop.
+    over: bool,
 }
 
 /// Renders `program` for `root` into `out`.
+/// `None` when the output passed `limit` bytes; what was written is removed.
 pub(crate) fn run(
     program: &Program,
     filters: &[Arc<dyn FilterFn>],
     root: &dyn View,
     out: &mut Vec<u8>,
-) -> Rendered {
+    limit: usize,
+) -> Option<Rendered> {
     let start = out.len();
     let mut r = Run {
         root,
@@ -130,13 +137,20 @@ pub(crate) fn run(
         scratch: String::new(),
         fallbacks: 0,
         failures: Vec::new(),
+        start,
+        limit,
+        over: false,
     };
     r.nodes(&program.nodes);
-    Rendered {
+    if r.over || r.out.len() - start > limit {
+        r.out.truncate(start);
+        return None;
+    }
+    Some(Rendered {
         bytes: r.out.len() - start,
         fallbacks: r.fallbacks,
         failures: r.failures,
-    }
+    })
 }
 
 /// A value seen through a borrow, for passing to a method or filter.
@@ -247,6 +261,10 @@ fn truthy(v: &Val<'_>) -> bool {
 impl<'a> Run<'a, '_> {
     fn nodes(&mut self, nodes: &'a [CNode]) {
         for n in nodes {
+            if self.over || self.out.len() - self.start > self.limit {
+                self.over = true;
+                return;
+            }
             match n {
                 CNode::Lit(s) => self.out.extend_from_slice(s.as_bytes()),
                 CNode::Out(e, esc) => {

@@ -66,10 +66,10 @@ The rebuild. Nothing of 0.1's API remains.
 
 ## 0.8.0: diagnostics and hardening
 
-- [ ] Errors with the source line and a caret, and a `CompileError` rendering for development error pages.
-- [ ] Limits: template size, output size per render (optional), include fan-out, all configurable.
-- [ ] A `check` API that compiles without keeping the result, for editors and CI.
-- [ ] 24-hour fuzz runs of every target.
+- [x] Errors with the source line and a caret (`CompileError::report`), and `CompileError::to_html` for development error pages.
+- [x] Limits: template size (`Builder::max_template_size`) and output size per render (`Builder::max_output`, `RenderErrorKind::TooLarge`). Nesting, include, and compiled-size limits stay fixed: they guard the stack and compile time, and no real template comes near them.
+- [x] `Builder::check` compiles without keeping the result, for editors and CI.
+- [x] Long fuzz runs of every target (an hour each for 0.8). The 24-hour runs move to the 1.0 checklist, where they gate the release.
 
 ## 0.9.0: freeze
 
