@@ -9,6 +9,7 @@
 /fuzz/corpus/
 /fuzz/artifacts/
 /benches/target/
+/benches/compare/target/
 
 # Editor & OS junk
 /.vscode

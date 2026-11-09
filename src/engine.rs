@@ -1,11 +1,17 @@
 //! The template set and the live handle that renders it.
 
 use std::{
+    cell::RefCell,
     collections::HashMap,
-    fmt, fs, io,
+    fmt, fs,
+    hash::{BuildHasherDefault, Hasher},
+    io,
     marker::PhantomData,
     path::Path,
-    sync::{Arc, PoisonError, RwLock},
+    sync::{
+        Arc, PoisonError, RwLock,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use crate::{
@@ -208,7 +214,8 @@ impl<V: View> Builder<V> {
             self.filters.into_iter().unzip();
         match compile::compile_all(&sources, &sigs) {
             Ok(programs) => {
-                let mut names = HashMap::with_capacity(sources.len());
+                let mut names =
+                    Names::with_capacity_and_hasher(sources.len(), BuildHasherDefault::default());
                 for (i, s) in sources.into_iter().enumerate() {
                     let _ = names.insert(s.name, i);
                 }
@@ -246,8 +253,34 @@ impl<V: View> Builder<V> {
     }
 }
 
+/// A fast hash for template names. Names come from the application, not from
+/// visitors, so a keyed hash buys nothing here.
+#[derive(Default)]
+struct NameHasher(u64);
+
+impl Hasher for NameHasher {
+    fn write(&mut self, bytes: &[u8]) {
+        const K: u64 = 0x517c_c1b7_2722_0a95;
+        let mut chunks = bytes.chunks_exact(8);
+        for c in &mut chunks {
+            let mut w = [0u8; 8];
+            w.copy_from_slice(c);
+            self.0 = (self.0.rotate_left(5) ^ u64::from_le_bytes(w)).wrapping_mul(K);
+        }
+        for &b in chunks.remainder() {
+            self.0 = (self.0.rotate_left(5) ^ u64::from(b)).wrapping_mul(K);
+        }
+    }
+
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+type Names = HashMap<Box<str>, usize, BuildHasherDefault<NameHasher>>;
+
 struct Set {
-    names: HashMap<Box<str>, usize>,
+    names: Names,
     programs: Vec<Program>,
     filters: Box<[Arc<dyn FilterFn>]>,
 }
@@ -357,21 +390,95 @@ impl<V: View> Templates<V> {
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 pub struct Engine<V> {
-    current: Arc<RwLock<Templates<V>>>,
+    shared: Arc<Shared>,
+    _view: PhantomData<fn(&V)>,
+}
+
+/// What clones of one engine share.
+struct Shared {
+    /// Distinguishes engines in the per-thread cache.
+    id: u64,
+    /// Incremented after every swap.
+    generation: AtomicU64,
+    current: RwLock<Arc<Set>>,
+}
+
+static NEXT_ENGINE: AtomicU64 = AtomicU64::new(1);
+
+/// How many engines each thread remembers the current set of.
+const CACHE_SLOTS: usize = 4;
+
+/// (engine id, generation, set) for the engines this thread rendered with
+/// lately. A render that finds its engine at the current generation uses
+/// the set from here and touches no shared memory but one atomic load.
+type Cache = [Option<(u64, u64, Arc<Set>)>; CACHE_SLOTS];
+
+thread_local! {
+    static CACHE: RefCell<Cache> = const { RefCell::new([const { None }; CACHE_SLOTS]) };
 }
 
 impl<V> Clone for Engine<V> {
     fn clone(&self) -> Self {
         Self {
-            current: Arc::clone(&self.current),
+            shared: Arc::clone(&self.shared),
+            _view: PhantomData,
         }
     }
 }
 
 impl<V> fmt::Debug for Engine<V> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let t = self.current.read().unwrap_or_else(PoisonError::into_inner);
-        f.debug_struct("Engine").field("templates", &*t).finish()
+        let t = Templates::<V> {
+            set: self.current_set(),
+            _view: PhantomData,
+        };
+        f.debug_struct("Engine").field("templates", &t).finish()
+    }
+}
+
+impl<V> Engine<V> {
+    fn current_set(&self) -> Arc<Set> {
+        Arc::clone(
+            &self
+                .shared
+                .current
+                .read()
+                .unwrap_or_else(PoisonError::into_inner),
+        )
+    }
+
+    /// Runs `f` with the current set, from this thread's cache when it is
+    /// up to date.
+    fn with_set<R>(&self, f: impl FnOnce(&Set) -> R) -> R {
+        let id = self.shared.id;
+        let generation = self.shared.generation.load(Ordering::Acquire);
+        CACHE.with(|cache| {
+            // A block's renderer may render through another engine on the
+            // same thread while the cache is borrowed here; then the inner
+            // render takes the slow path.
+            if let Ok(c) = cache.try_borrow() {
+                if let Some((_, _, set)) = c
+                    .iter()
+                    .flatten()
+                    .find(|(i, g, _)| *i == id && *g == generation)
+                {
+                    return f(set);
+                }
+            }
+            let set = self.current_set();
+            if let Ok(mut c) = cache.try_borrow_mut() {
+                let slot = c
+                    .iter()
+                    .position(|e| e.as_ref().is_some_and(|(i, _, _)| *i == id))
+                    .or_else(|| c.iter().position(Option::is_none))
+                    .unwrap_or_else(|| {
+                        c.rotate_left(1);
+                        CACHE_SLOTS - 1
+                    });
+                c[slot] = Some((id, generation, Arc::clone(&set)));
+            }
+            f(&set)
+        })
     }
 }
 
@@ -391,24 +498,43 @@ impl<V: View> Engine<V> {
     /// An engine serving `templates`.
     #[must_use]
     pub fn new(templates: Templates<V>) -> Self {
+        let shared = Shared {
+            id: NEXT_ENGINE.fetch_add(1, Ordering::Relaxed),
+            generation: AtomicU64::new(0),
+            current: RwLock::new(templates.set),
+        };
         Self {
-            current: Arc::new(RwLock::new(templates)),
+            shared: Arc::new(shared),
+            _view: PhantomData,
         }
     }
 
     /// The template set renders use right now.
     #[must_use]
     pub fn templates(&self) -> Templates<V> {
-        self.current
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
+        Templates {
+            set: self.current_set(),
+            _view: PhantomData,
+        }
     }
 
     /// Replaces the template set and returns the old one.
     pub fn swap(&self, templates: Templates<V>) -> Templates<V> {
-        let mut cur = self.current.write().unwrap_or_else(PoisonError::into_inner);
-        std::mem::replace(&mut *cur, templates)
+        let old = {
+            let mut cur = self
+                .shared
+                .current
+                .write()
+                .unwrap_or_else(PoisonError::into_inner);
+            std::mem::replace(&mut *cur, templates.set)
+        };
+        // After the new set is in place: a render that sees the new
+        // generation is sure to read the new set.
+        let _ = self.shared.generation.fetch_add(1, Ordering::Release);
+        Templates {
+            set: old,
+            _view: PhantomData,
+        }
     }
 
     /// Compiles `builder` and, when every template compiles, swaps it in.
@@ -428,7 +554,7 @@ impl<V: View> Engine<V> {
     ///
     /// As [`Templates::render`].
     pub fn render(&self, name: &str, view: &V, out: &mut Vec<u8>) -> Result<Rendered, RenderError> {
-        self.templates().render(name, view, out)
+        self.with_set(|set| set.render(name, view, out))
     }
 
     /// Renders into a new string.
@@ -437,6 +563,28 @@ impl<V: View> Engine<V> {
     ///
     /// As [`Templates::render`].
     pub fn render_to_string(&self, name: &str, view: &V) -> Result<String, RenderError> {
-        self.templates().render_to_string(name, view)
+        let mut out = Vec::new();
+        let _ = self.render(name, view, &mut out)?;
+        Ok(into_string(out))
+    }
+}
+
+/// Every escaper and every literal keeps UTF-8 intact; a block's renderer
+/// writes through `Output`, whose methods take `&str`.
+fn into_string(out: Vec<u8>) -> String {
+    String::from_utf8(out).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
+}
+
+impl Set {
+    fn render(
+        &self,
+        name: &str,
+        view: &dyn View,
+        out: &mut Vec<u8>,
+    ) -> Result<Rendered, RenderError> {
+        match self.names.get(name) {
+            Some(&i) => Ok(render::run(&self.programs[i], &self.filters, view, out)),
+            None => Err(RenderError::not_found(name)),
+        }
     }
 }

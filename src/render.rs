@@ -250,7 +250,10 @@ impl<'a> Run<'a, '_> {
             match n {
                 CNode::Lit(s) => self.out.extend_from_slice(s.as_bytes()),
                 CNode::Out(e, esc) => {
-                    let v = self.eval(e);
+                    let v = match self.field_path(e) {
+                        Some(v) => Val::V(v),
+                        None => self.eval(e),
+                    };
                     self.write(v, *esc);
                 }
                 CNode::Block {
@@ -544,6 +547,31 @@ impl<'a> Run<'a, '_> {
                 }
             }
         }
+    }
+
+    /// The value of a path made only of fields (the common case of an
+    /// output), without the general evaluator; `None` for anything else.
+    #[inline]
+    fn field_path(&self, e: &'a CExpr) -> Option<Value<'a>> {
+        let (mut v, steps) = match e {
+            CExpr::Root(steps) => (Value::View(self.root), steps),
+            CExpr::Slot(s, steps) => {
+                let sl = &self.slots[usize::from(*s)];
+                if sl.text.is_some() {
+                    return None;
+                }
+                (sl.value, steps)
+            }
+            _ => return None,
+        };
+        for step in steps {
+            let Step::Field(id) = step else { return None };
+            v = match v {
+                Value::View(x) => x.field(*id),
+                _ => Value::Absent,
+            };
+        }
+        Some(v)
     }
 
     /// Follows a path from `v`.

@@ -6,6 +6,28 @@ All notable changes to `luminess` are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-08
+
+Performance.
+
+### Changed
+
+- `Engine` renders without a lock or a shared atomic write: each thread keeps
+  the engine's current template set and checks a generation counter, so
+  renders on many threads no longer contend. `reload` and `swap` are seen by
+  the next render on every thread.
+- `escape::html` scans eight bytes at a time (about 2.5x faster on text with
+  nothing to escape); `escape::url` and `escape::url_component` copy runs of
+  safe bytes at once.
+- Template names are looked up with a fast hash.
+- `view!` answers fields through a jump table; outputs that are plain field
+  paths skip the general evaluator.
+
+### Added
+
+- `benches/compare`: the typical-page benchmark rendered by Luminess, Askama,
+  Tera, and MiniJinja.
+
 ## [0.6.0] - 2026-11-08
 
 Methods and filters.
