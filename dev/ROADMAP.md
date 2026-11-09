@@ -44,10 +44,10 @@ The rebuild. Nothing of 0.1's API remains.
 
 ## 0.5.0: blocks, fallbacks, and the syntax freeze
 
-- [ ] Block fallbacks declared in the template: `{{ page.stock | fallback("Unavailable") }}`.
-- [ ] `Rendered` lists every failure (bounded), not only the first.
-- [ ] A block can be rendered in an attribute context through a text form (`View::text`).
-- [ ] The syntax in `dev/SYNTAX.md` is reviewed and frozen; changes after this are additions only.
+- [x] Block fallbacks declared in the template: `{{ page.stock | fallback("Unavailable") }}`.
+- [x] `Rendered::failures` lists every failure (up to `Rendered::MAX_FAILURES`), not only the first.
+- [x] A block can go in an attribute, URL, script, or style through its text form (`View::text`), escaped for the place.
+- [ ] The syntax in `dev/SYNTAX.md` is reviewed and frozen; changes after this are additions only. (Implemented in full; the freeze waits for James's review.)
 
 ## 0.6.0: methods and filters
 

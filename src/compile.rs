@@ -87,7 +87,14 @@ pub(crate) enum CExpr {
 pub(crate) enum CNode {
     Lit(Box<str>),
     Out(CExpr, Esc),
-    Block(CExpr),
+    /// A view that renders itself. In HTML text it writes markup; anywhere
+    /// else its text form, escaped for the place. `fallback` replaces the
+    /// view's own fallback when it fails.
+    Block {
+        expr: CExpr,
+        esc: Esc,
+        fallback: Option<Box<str>>,
+    },
     If(Vec<(CExpr, Vec<CNode>)>, Vec<CNode>),
     For {
         list: CExpr,
@@ -767,6 +774,26 @@ impl<'s> Compiler<'s> {
     }
 
     fn output(&mut self, t: usize, e: &Expr, ctx: Ctx, scope: &Scope) -> Option<CNode> {
+        // `| fallback("...")` is the last filter of a block's output.
+        let (e, fallback) = match &e.kind {
+            ExprKind::Filter { base, name, args } if name == "fallback" => match args.as_slice() {
+                [
+                    Expr {
+                        kind: ExprKind::Str(text),
+                        ..
+                    },
+                ] => (&**base, Some(text.as_str())),
+                _ => {
+                    self.error(
+                        t,
+                        e.at,
+                        "`fallback` takes one string: `| fallback(\"Unavailable\")`",
+                    );
+                    return None;
+                }
+            },
+            _ => (e, None),
+        };
         let (inner, raw) = match &e.kind {
             ExprKind::Filter { base, name, args } if name == "raw" => {
                 if !args.is_empty() {
@@ -795,17 +822,20 @@ impl<'s> Compiler<'s> {
             Ty::Object(s) if s.renders() => {
                 if raw {
                     self.error(t, e.at, "`raw` applies to text, not to a block");
-                } else if esc != Esc::Text {
-                    self.error(
-                        t,
-                        e.at,
-                        format!(
-                            "a block renders markup, so it can only go in HTML text, not in {}",
-                            ctx.describe()
-                        ),
-                    );
                 }
-                return Some(CNode::Block(ce));
+                return Some(CNode::Block {
+                    expr: ce,
+                    esc,
+                    fallback: fallback.map(Into::into),
+                });
+            }
+            _ if fallback.is_some() => {
+                self.error(
+                    t,
+                    e.at,
+                    "`fallback` applies to blocks that render themselves; use `default` for a missing value",
+                );
+                return None;
             }
             Ty::Object(s) => {
                 let fields: Vec<&str> = s.names().take(6).collect();

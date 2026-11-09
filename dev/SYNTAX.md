@@ -1,6 +1,7 @@
 # Luminess template syntax (proposal)
 
-Status: draft for review. The syntax may change until 0.5.0, when it freezes.
+Status: complete proposal, implemented in 0.5.0. It freezes once James has
+reviewed it; until then, changes he asks for are taken with a migration note.
 
 The syntax follows Jinja and Twig, so anyone who has written a Jinja, Twig,
 Liquid, or Django template can read a Luminess template on sight. Where
@@ -119,6 +120,7 @@ theme for `| raw` to review every unescaped value.
 | `trim` | remove leading and trailing whitespace |
 | `length` | the number of items in a list or characters in a text |
 | `raw` | unescaped output (see section 6) |
+| `fallback("text")` | for a block that renders itself: the text written when it fails |
 
 Filters chain: `{{ post.title | trim | upper }}`. An application can register
 its own filters; they are checked at compile time like fields.

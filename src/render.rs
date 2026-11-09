@@ -40,10 +40,13 @@ fn write_float(f: f64, out: &mut Vec<u8>, scratch: &mut String) {
 pub struct Rendered {
     bytes: usize,
     fallbacks: u32,
-    first_failure: Option<Failed>,
+    failures: Vec<Failed>,
 }
 
 impl Rendered {
+    /// How many block failures one render keeps for [`Rendered::failures`].
+    pub const MAX_FAILURES: usize = 16;
+
     /// The number of bytes this render appended to the buffer.
     #[must_use]
     pub fn bytes(&self) -> usize {
@@ -59,7 +62,14 @@ impl Rendered {
     /// The first block failure, for the log.
     #[must_use]
     pub fn first_failure(&self) -> Option<&Failed> {
-        self.first_failure.as_ref()
+        self.failures.first()
+    }
+
+    /// The block failures, in the order they happened: at most
+    /// [`Rendered::MAX_FAILURES`]; [`Rendered::fallbacks`] counts them all.
+    #[must_use]
+    pub fn failures(&self) -> &[Failed] {
+        &self.failures
     }
 
     /// `true` when no block failed.
@@ -88,7 +98,7 @@ struct Run<'a, 'o> {
     out: &'o mut Vec<u8>,
     scratch: String,
     fallbacks: u32,
-    first_failure: Option<Failed>,
+    failures: Vec<Failed>,
 }
 
 /// Renders `program` for `root` into `out`.
@@ -107,13 +117,13 @@ pub(crate) fn run(program: &Program, root: &dyn View, out: &mut Vec<u8>) -> Rend
         out,
         scratch: String::new(),
         fallbacks: 0,
-        first_failure: None,
+        failures: Vec::new(),
     };
     r.nodes(&program.nodes);
     Rendered {
         bytes: r.out.len() - start,
         fallbacks: r.fallbacks,
-        first_failure: r.first_failure,
+        failures: r.failures,
     }
 }
 
@@ -151,9 +161,13 @@ impl<'a> Run<'a, '_> {
                     let v = self.eval(e);
                     self.write(v, *esc);
                 }
-                CNode::Block(e) => {
-                    if let Val::V(Value::View(v)) = self.eval(e) {
-                        self.block(v);
+                CNode::Block {
+                    expr,
+                    esc,
+                    fallback,
+                } => {
+                    if let Val::V(Value::View(v)) = self.eval(expr) {
+                        self.block(v, *esc, fallback.as_deref());
                     }
                 }
                 CNode::If(arms, otherwise) => {
@@ -221,15 +235,31 @@ impl<'a> Run<'a, '_> {
         }
     }
 
-    fn block(&mut self, v: &'a dyn View) {
+    fn block(&mut self, v: &'a dyn View, esc: Esc, fallback: Option<&str>) {
         let mark = self.out.len();
-        let result = v.render(&mut Output::new(self.out));
+        let result = if esc == Esc::Text {
+            v.render(&mut Output::new(self.out))
+        } else {
+            // Not HTML text: the block's text form, escaped for the place.
+            let mut s = std::mem::take(&mut self.scratch);
+            s.clear();
+            let r = v.text(&mut s);
+            if r.is_ok() {
+                self.text_out(&s, esc);
+            }
+            self.scratch = s;
+            r
+        };
         if let Err(f) = result {
             self.out.truncate(mark);
-            v.fallback(&mut Output::new(self.out));
+            match fallback {
+                Some(text) => self.text_out(text, if esc == Esc::Text { Esc::Text } else { esc }),
+                None if esc == Esc::Text => v.fallback(&mut Output::new(self.out)),
+                None => {}
+            }
             self.fallbacks = self.fallbacks.saturating_add(1);
-            if self.first_failure.is_none() {
-                self.first_failure = Some(f);
+            if self.failures.len() < Rendered::MAX_FAILURES {
+                self.failures.push(f);
             }
         }
     }
