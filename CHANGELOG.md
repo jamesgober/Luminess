@@ -6,6 +6,25 @@ All notable changes to `luminess` are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-08
+
+Methods and filters.
+
+### Added
+
+- Methods: `SchemaBuilder::method(name, params, returns)` declares a value
+  computed from arguments; templates call it as `x.options("size")` or
+  `x.cheapest()`, with the argument count and kinds checked at compile time.
+  `View::call` answers with a `Computed`: a borrowed `Value` or text built
+  for the call. Calling a field or naming a method without `()` is a compile
+  error with a hint.
+- Application filters: `Builder::filter(name, params, returns, closure)`,
+  checked at compile time like built-in ones.
+- Built-in filters `truncate(n)`, `join(sep)`, `first`, `last`,
+  `replace(from, to)`, `date(format)` (Unix seconds, UTC), and `number`
+  (digit grouping).
+- `{% set name = expr %}`: a local value until the end of its block.
+
 ## [0.5.0] - 2026-11-08
 
 Blocks and fallbacks.

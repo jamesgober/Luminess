@@ -9,11 +9,11 @@ use std::{
 };
 
 use crate::{
-    compile::{self, Program, Source},
+    compile::{self, FilterSig, Program, Source},
     error::{CompileError, Diagnostic, RenderError},
     parse,
     render::{self, Rendered},
-    view::{Schema, Shaped, View},
+    view::{Computed, FilterFn, Kind, Schema, Shaped, Value, View},
 };
 
 /// Collects template sources, then compiles them all at once.
@@ -42,6 +42,7 @@ use crate::{
 pub struct Builder<V> {
     schema: Schema,
     sources: Vec<(String, String, Option<Schema>)>,
+    filters: Vec<(FilterSig, Arc<dyn FilterFn>)>,
     _view: PhantomData<fn(&V)>,
 }
 
@@ -53,7 +54,15 @@ impl<V> fmt::Debug for Builder<V> {
                 "templates",
                 &self.sources.iter().map(|s| &s.0).collect::<Vec<_>>(),
             )
-            .finish()
+            .field(
+                "filters",
+                &self
+                    .filters
+                    .iter()
+                    .map(|(s, _)| &s.name)
+                    .collect::<Vec<_>>(),
+            )
+            .finish_non_exhaustive()
     }
 }
 
@@ -63,6 +72,7 @@ impl<V: View> Builder<V> {
         Self {
             schema,
             sources: Vec::new(),
+            filters: Vec::new(),
             _view: PhantomData,
         }
     }
@@ -84,6 +94,51 @@ impl<V: View> Builder<V> {
     ) -> Self {
         self.sources
             .push((name.into(), source.into(), Some(schema)));
+        self
+    }
+
+    /// Adds an application filter. `params` are the kinds of its arguments
+    /// and `returns` the kind of what it gives back; the compiler checks
+    /// every use against them. A built-in filter's name cannot be taken.
+    ///
+    /// ```
+    /// use luminess::{Computed, Engine, Kind, Value};
+    ///
+    /// struct Order { cents: i64 }
+    /// luminess::view!(Order as "order" { cents: int });
+    ///
+    /// let engine = Engine::<Order>::builder()
+    ///     .filter("money", &[Kind::Text], Kind::Text, |v, args| {
+    ///         let (Value::Int(c), [Value::Text(cur)]) = (v, args) else { return Value::Absent.into() };
+    ///         Computed::Text(format!("{}.{:02} {cur}", c / 100, c % 100))
+    ///     })
+    ///     .template("t", r#"{{ order.cents | money("EUR") }}"#)
+    ///     .build()?;
+    /// assert_eq!(engine.render_to_string("t", &Order { cents: 1999 })?, "19.99 EUR");
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    ///
+    /// # Panics
+    ///
+    /// When `name` is a built-in filter or was added before.
+    pub fn filter<F>(mut self, name: &str, params: &[Kind], returns: Kind, f: F) -> Self
+    where
+        F: for<'v, 'w> Fn(Value<'v>, &[Value<'w>]) -> Computed<'v> + Send + Sync + 'static,
+    {
+        assert!(
+            !compile::BUILTIN_FILTERS.contains(&name),
+            "luminess: `{name}` is a built-in filter"
+        );
+        assert!(
+            !self.filters.iter().any(|(s, _)| &*s.name == name),
+            "luminess: filter `{name}` added twice"
+        );
+        let sig = FilterSig {
+            name: name.into(),
+            params: params.into(),
+            returns,
+        };
+        self.filters.push((sig, Arc::new(f)));
         self
     }
 
@@ -149,14 +204,20 @@ impl<V: View> Builder<V> {
                 }
             })
             .collect();
-        match compile::compile_all(&sources) {
+        let (sigs, fns): (Vec<FilterSig>, Vec<Arc<dyn FilterFn>>) =
+            self.filters.into_iter().unzip();
+        match compile::compile_all(&sources, &sigs) {
             Ok(programs) => {
                 let mut names = HashMap::with_capacity(sources.len());
                 for (i, s) in sources.into_iter().enumerate() {
                     let _ = names.insert(s.name, i);
                 }
                 Ok(Templates {
-                    set: Arc::new(Set { names, programs }),
+                    set: Arc::new(Set {
+                        names,
+                        programs,
+                        filters: fns.into_boxed_slice(),
+                    }),
                     _view: PhantomData,
                 })
             }
@@ -188,6 +249,7 @@ impl<V: View> Builder<V> {
 struct Set {
     names: HashMap<Box<str>, usize>,
     programs: Vec<Program>,
+    filters: Box<[Arc<dyn FilterFn>]>,
 }
 
 /// A compiled template set. Cloning is cheap, and a clone keeps rendering the
@@ -223,7 +285,12 @@ impl<V: View> Templates<V> {
     /// template has that name. Nothing is written then.
     pub fn render(&self, name: &str, view: &V, out: &mut Vec<u8>) -> Result<Rendered, RenderError> {
         match self.set.names.get(name) {
-            Some(&i) => Ok(render::run(&self.set.programs[i], view, out)),
+            Some(&i) => Ok(render::run(
+                &self.set.programs[i],
+                &self.set.filters,
+                view,
+                out,
+            )),
             None => Err(RenderError::not_found(name)),
         }
     }

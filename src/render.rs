@@ -1,13 +1,13 @@
 //! Runs a compiled template against a view, writing into the caller's buffer.
 
-use std::{borrow::Cow, fmt::Write as _};
+use std::{borrow::Cow, fmt::Write as _, sync::Arc};
 
 use crate::{
-    compile::{CExpr, CNode, Esc, Filt, LoopAttr, Program},
+    compile::{CExpr, CNode, Esc, Filt, LoopAttr, Program, Step},
     escape,
     output::{Failed, Output},
     parse::CmpOp,
-    view::{FieldId, List, Value, View},
+    view::{Computed, FieldId, FilterFn, List, Value, View},
 };
 
 /// Writes an integer in decimal.
@@ -84,6 +84,8 @@ struct Slot<'a> {
     value: Value<'a>,
     index: usize,
     len: usize,
+    /// A `set` value that is text a filter built: its index in `Run::texts`.
+    text: Option<usize>,
 }
 
 /// A value during evaluation: a view's value, or text a filter produced.
@@ -94,7 +96,9 @@ enum Val<'a> {
 
 struct Run<'a, 'o> {
     root: &'a dyn View,
+    filters: &'a [Arc<dyn FilterFn>],
     slots: Vec<Slot<'a>>,
+    texts: Vec<String>,
     out: &'o mut Vec<u8>,
     scratch: String,
     fallbacks: u32,
@@ -102,18 +106,26 @@ struct Run<'a, 'o> {
 }
 
 /// Renders `program` for `root` into `out`.
-pub(crate) fn run(program: &Program, root: &dyn View, out: &mut Vec<u8>) -> Rendered {
+pub(crate) fn run(
+    program: &Program,
+    filters: &[Arc<dyn FilterFn>],
+    root: &dyn View,
+    out: &mut Vec<u8>,
+) -> Rendered {
     let start = out.len();
     let mut r = Run {
         root,
+        filters,
         slots: vec![
             Slot {
                 value: Value::Absent,
                 index: 0,
-                len: 0
+                len: 0,
+                text: None,
             };
             program.slots
         ],
+        texts: Vec::new(),
         out,
         scratch: String::new(),
         fallbacks: 0,
@@ -127,14 +139,94 @@ pub(crate) fn run(program: &Program, root: &dyn View, out: &mut Vec<u8>) -> Rend
     }
 }
 
-fn path<'a>(mut v: Value<'a>, ids: &[FieldId]) -> Value<'a> {
-    for &id in ids {
-        v = match v {
-            Value::View(x) => x.field(id),
-            _ => return Value::Absent,
+/// A value seen through a borrow, for passing to a method or filter.
+fn as_value<'v>(v: &'v Val<'_>) -> Value<'v> {
+    match v {
+        Val::V(v) => *v,
+        Val::Owned(s) => Value::Text(s),
+    }
+}
+
+/// A value that may borrow a temporary, made independent of it.
+fn detach(v: Value<'_>) -> Val<'static> {
+    match v {
+        Value::Absent | Value::View(_) | Value::List(_) => Val::V(Value::Absent),
+        Value::Bool(b) => Val::V(Value::Bool(b)),
+        Value::Int(i) => Val::V(Value::Int(i)),
+        Value::Float(f) => Val::V(Value::Float(f)),
+        Value::Text(s) | Value::Html(s) => Val::Owned(s.to_owned()),
+        Value::Display(d) => Val::Owned(d.to_string()),
+    }
+}
+
+const MONTHS: [&str; 12] = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+];
+
+/// Formats a Unix time (seconds, UTC) with `%Y %m %d %H %M %S %b %B %%`.
+pub(crate) fn format_date(secs: i64, fmt: &str, out: &mut String) {
+    let days = secs.div_euclid(86_400);
+    let rem = secs.rem_euclid(86_400);
+    // Days to a civil date (H. Hinnant's algorithm).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    let mut chars = fmt.chars();
+    while let Some(c) = chars.next() {
+        if c != '%' {
+            out.push(c);
+            continue;
+        }
+        let _ = match chars.next() {
+            Some('Y') => write!(out, "{year:04}"),
+            Some('m') => write!(out, "{month:02}"),
+            Some('d') => write!(out, "{day:02}"),
+            Some('H') => write!(out, "{:02}", rem / 3600),
+            Some('M') => write!(out, "{:02}", rem / 60 % 60),
+            Some('S') => write!(out, "{:02}", rem % 60),
+            Some('b') => write!(
+                out,
+                "{}",
+                &MONTHS[usize::try_from(month - 1).unwrap_or(0)][..3]
+            ),
+            Some('B') => write!(out, "{}", MONTHS[usize::try_from(month - 1).unwrap_or(0)]),
+            Some('%') => write!(out, "%"),
+            Some(other) => write!(out, "%{other}"),
+            None => write!(out, "%"),
         };
     }
-    v
+}
+
+/// Writes `digits` (an optional `-`, digits, an optional fraction) with a
+/// comma between each group of three integer digits.
+pub(crate) fn group_digits(digits: &str, out: &mut String) {
+    let (sign, rest) = digits.strip_prefix('-').map_or(("", digits), |r| ("-", r));
+    let (int, frac) = rest.find('.').map_or((rest, ""), |i| rest.split_at(i));
+    out.push_str(sign);
+    for (i, c) in int.chars().enumerate() {
+        if i > 0 && (int.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out.push_str(frac);
 }
 
 fn truthy(v: &Val<'_>) -> bool {
@@ -205,6 +297,7 @@ impl<'a> Run<'a, '_> {
                                 value: l.get(i),
                                 index: i,
                                 len,
+                                text: None,
                             };
                             self.nodes(body);
                         }
@@ -219,8 +312,29 @@ impl<'a> Run<'a, '_> {
                         value: v,
                         index: 0,
                         len: 1,
+                        text: None,
                     };
                     self.nodes(body);
+                }
+                CNode::Set { slot, value } => {
+                    let slot_value = match self.eval(value) {
+                        Val::V(v) => Slot {
+                            value: v,
+                            index: 0,
+                            len: 1,
+                            text: None,
+                        },
+                        Val::Owned(s) => {
+                            self.texts.push(s);
+                            Slot {
+                                value: Value::Absent,
+                                index: 0,
+                                len: 1,
+                                text: Some(self.texts.len() - 1),
+                            }
+                        }
+                    };
+                    self.slots[usize::from(*slot)] = slot_value;
                 }
                 CNode::Try(body, fallback) => {
                     let mark = self.out.len();
@@ -266,12 +380,26 @@ impl<'a> Run<'a, '_> {
 
     fn eval(&mut self, e: &'a CExpr) -> Val<'a> {
         match e {
-            CExpr::Root(ids) => Val::V(if ids.is_empty() {
-                Value::View(self.root)
-            } else {
-                path(self.root.field(ids[0]), &ids[1..])
-            }),
-            CExpr::Slot(s, ids) => Val::V(path(self.slots[usize::from(*s)].value, ids)),
+            CExpr::Root(steps) => {
+                let root = Val::V(Value::View(self.root));
+                if steps.is_empty() {
+                    root
+                } else {
+                    self.walk(root, steps)
+                }
+            }
+            CExpr::Slot(s, steps) => {
+                let sl = self.slots[usize::from(*s)];
+                let base = match sl.text {
+                    Some(i) => Val::Owned(self.texts[i].clone()),
+                    None => Val::V(sl.value),
+                };
+                if steps.is_empty() {
+                    base
+                } else {
+                    self.walk(base, steps)
+                }
+            }
             CExpr::Loop(s, attr) => {
                 let sl = self.slots[usize::from(*s)];
                 let to_i = |n: usize| Value::Int(i64::try_from(n).unwrap_or(i64::MAX));
@@ -323,9 +451,77 @@ impl<'a> Run<'a, '_> {
                 };
                 if empty { self.eval(b) } else { v }
             }
-            CExpr::Filter(f, x) => {
+            CExpr::Filter(f, x, args) => {
                 let v = self.eval(x);
                 match f {
+                    Filt::Custom(i) => self.custom(usize::from(*i), v, args),
+                    Filt::First | Filt::Last => match v {
+                        Val::V(Value::List(l)) if !l.is_empty() => {
+                            Val::V(l.get(if *f == Filt::First { 0 } else { l.len() - 1 }))
+                        }
+                        _ => Val::V(Value::Absent),
+                    },
+                    Filt::Join => {
+                        let Val::V(Value::List(l)) = v else {
+                            return Val::V(Value::Absent);
+                        };
+                        let sep = self.eval(&args[0]);
+                        let sep = Self::text(&sep).into_owned();
+                        let mut joined = String::new();
+                        for i in 0..l.len() {
+                            if i > 0 {
+                                joined.push_str(&sep);
+                            }
+                            joined.push_str(&Self::text(&Val::V(l.get(i))));
+                        }
+                        Val::Owned(joined)
+                    }
+                    Filt::Truncate | Filt::Replace => {
+                        if matches!(v, Val::V(Value::Absent)) {
+                            return v;
+                        }
+                        let s = Self::text(&v).into_owned();
+                        let a = self.eval(&args[0]);
+                        if *f == Filt::Truncate {
+                            let n = match a {
+                                Val::V(Value::Int(n)) => usize::try_from(n).unwrap_or(0),
+                                _ => 0,
+                            };
+                            if s.chars().count() <= n {
+                                return Val::Owned(s);
+                            }
+                            let mut cut: String = s.chars().take(n).collect();
+                            cut.push_str("...");
+                            return Val::Owned(cut);
+                        }
+                        let from = Self::text(&a).into_owned();
+                        let b = self.eval(&args[1]);
+                        let to = Self::text(&b);
+                        if from.is_empty() {
+                            Val::Owned(s)
+                        } else {
+                            Val::Owned(s.replace(&from, &to))
+                        }
+                    }
+                    Filt::Date => {
+                        let Val::V(Value::Int(secs)) = v else {
+                            return Val::V(Value::Absent);
+                        };
+                        let fmt = self.eval(&args[0]);
+                        let mut out = String::new();
+                        format_date(secs, &Self::text(&fmt), &mut out);
+                        Val::Owned(out)
+                    }
+                    Filt::Number => {
+                        let digits = match v {
+                            Val::V(Value::Int(i)) => i.to_string(),
+                            Val::V(Value::Float(f)) if f.is_finite() => f.to_string(),
+                            _ => return v,
+                        };
+                        let mut out = String::new();
+                        group_digits(&digits, &mut out);
+                        Val::Owned(out)
+                    }
                     Filt::Length => {
                         let n = match &v {
                             Val::V(Value::List(l)) => l.len(),
@@ -347,6 +543,45 @@ impl<'a> Run<'a, '_> {
                     }
                 }
             }
+        }
+    }
+
+    /// Follows a path from `v`.
+    fn walk(&mut self, mut v: Val<'a>, steps: &'a [Step]) -> Val<'a> {
+        for step in steps {
+            let Val::V(Value::View(x)) = v else {
+                return Val::V(Value::Absent);
+            };
+            v = match step {
+                Step::Field(id) => Val::V(x.field(*id)),
+                Step::Call(id, args) => self.call(x, *id, args),
+            };
+        }
+        v
+    }
+
+    fn call(&mut self, x: &'a dyn View, id: FieldId, args: &'a [CExpr]) -> Val<'a> {
+        let vals: Vec<Val<'a>> = args.iter().map(|a| self.eval(a)).collect();
+        let values: Vec<Value<'_>> = vals.iter().map(as_value).collect();
+        match x.call(id, &values) {
+            Computed::Value(v) => Val::V(v),
+            Computed::Text(s) => Val::Owned(s),
+        }
+    }
+
+    fn custom(&mut self, i: usize, v: Val<'a>, args: &'a [CExpr]) -> Val<'a> {
+        let vals: Vec<Val<'a>> = args.iter().map(|a| self.eval(a)).collect();
+        let values: Vec<Value<'_>> = vals.iter().map(as_value).collect();
+        let f = &self.filters[i];
+        match v {
+            Val::V(value) => match f.apply(value, &values) {
+                Computed::Value(v) => Val::V(v),
+                Computed::Text(s) => Val::Owned(s),
+            },
+            Val::Owned(s) => match f.apply(Value::Text(&s), &values) {
+                Computed::Value(v) => detach(v),
+                Computed::Text(t) => Val::Owned(t),
+            },
         }
     }
 

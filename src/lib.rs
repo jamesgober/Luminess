@@ -84,5 +84,5 @@ pub use error::{CompileError, Diagnostic, RenderError, RenderErrorKind};
 pub use output::{Failed, Output};
 pub use render::Rendered;
 pub use view::{
-    FieldId, Kind, List, Schema, SchemaBuilder, SchemaRef, Shaped, ToValue, Value, View,
+    Computed, FieldId, Kind, List, Schema, SchemaBuilder, SchemaRef, Shaped, ToValue, Value, View,
 };

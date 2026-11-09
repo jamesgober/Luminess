@@ -30,7 +30,7 @@ A template engine for Rust that compiles once, at startup, against typed views.
 
 ```toml
 [dependencies]
-luminess = "0.5"
+luminess = "0.6"
 ```
 
 MSRV: Rust 1.85.
@@ -74,6 +74,8 @@ The syntax follows Jinja and Twig.
 {{ page.body }}                        an html field is trusted markup, written as is in HTML text
 {{ page.note | raw }}                  explicit unescaped output
 {{ page.subtitle | default("None") }}  filters
+{{ page.variations.options("size") }}  methods with arguments, checked at compile time
+{% set name = page.author.name | upper %}
 {% if page.featured %}...{% elif page.draft %}...{% else %}...{% endif %}
 {% for post in page.posts %}{{ loop.index }}. {{ post.title }}{% else %}No posts.{% endfor %}
 {% include "partials/nav" %}
@@ -88,7 +90,26 @@ parentheses, and literals (strings, integers, decimals, `true`, `false`). In a
 loop, `loop.index`, `loop.index0`, `loop.revindex`, `loop.first`, `loop.last`,
 and `loop.length` are available.
 
-Filters: `default(v)`, `upper`, `lower`, `trim`, `length`, `raw`.
+Filters: `default(v)`, `upper`, `lower`, `trim`, `length`, `truncate(n)`,
+`join(sep)`, `first`, `last`, `replace(from, to)`, `date(format)` (a Unix time
+in seconds, UTC; `%Y %m %d %H %M %S %b %B %%`), `number` (groups digits:
+`1,234,567`), `raw`, and `fallback(text)` for blocks. Add your own with
+`Builder::filter`:
+
+```rust
+use luminess::{Computed, Engine, Kind, Value};
+
+let engine = Engine::<Order>::builder()
+    .filter("money", &[Kind::Text], Kind::Text, |v, args| {
+        let (Value::Int(cents), [Value::Text(cur)]) = (v, args) else { return Value::Absent.into() };
+        Computed::Text(format!("{}.{:02} {cur}", cents / 100, cents % 100))
+    })
+    .template("total", r#"{{ order.cents | money("EUR") }}"#)
+    .build()?;
+```
+
+The compiler checks every use of a filter against the argument kinds you
+declare.
 
 False in a condition: `false`, an absent value, zero, the empty string, and
 the empty list.
@@ -191,6 +212,32 @@ let engine = Engine::<Product>::builder_with(schema)
 Values are `Text`, `Html` (trusted markup), `Int`, `Float`, `Bool`, `Display`
 (anything formattable, escaped like text), `View` (an object), `List`, and
 `Absent`.
+
+A schema can declare methods: values computed from arguments, such as a
+product's `variations.options("size")`. The compiler checks the argument
+count and kinds; `View::call` answers, returning a borrowed value or text
+built for the call (`Computed`):
+
+```rust
+use luminess::{Computed, FieldId, Kind, Schema, Value, View};
+
+let schema = Schema::build("variations")
+    .method("cheapest", &[], Kind::Int)
+    .method("options", &[Kind::Text], Kind::list(Kind::Text))
+    .finish();
+
+impl View for Variations {
+    fn field(&self, _: FieldId) -> Value<'_> { Value::Absent }
+
+    fn call<'s>(&'s self, id: FieldId, args: &[Value<'_>]) -> Computed<'s> {
+        match (id.index(), args) {
+            (0, []) => Value::Int(self.cheapest_cents()).into(),
+            (1, [Value::Text(axis)]) => Value::List(self.options(axis)).into(),
+            _ => Value::Absent.into(),
+        }
+    }
+}
+```
 
 ## Blocks and fallbacks
 

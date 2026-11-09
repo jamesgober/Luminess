@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use crate::{
     html::{Ctx, Slot, UrlPart},
-    parse::{CmpOp, Expr, ExprKind, Node, ParseError},
+    parse::{CmpOp, Expr, ExprKind, Node, ParseError, Seg},
     view::{FieldId, Kind, Schema},
 };
 
@@ -62,14 +62,37 @@ pub(crate) enum Filt {
     Lower,
     Trim,
     Length,
+    Truncate,
+    Join,
+    First,
+    Last,
+    Replace,
+    Date,
+    Number,
+    /// An application filter, by its index on the builder.
+    Custom(u16),
+}
+
+/// One step of a path.
+#[derive(Debug)]
+pub(crate) enum Step {
+    Field(FieldId),
+    Call(FieldId, Box<[CExpr]>),
+}
+
+/// An application filter's signature, checked at compile time.
+pub(crate) struct FilterSig {
+    pub name: Box<str>,
+    pub params: Box<[Kind]>,
+    pub returns: Kind,
 }
 
 #[derive(Debug)]
 pub(crate) enum CExpr {
-    /// The root view, then a field path (empty: the root itself).
-    Root(Box<[FieldId]>),
-    /// A loop variable, then a field path.
-    Slot(u16, Box<[FieldId]>),
+    /// The root view, then a path (empty: the root itself).
+    Root(Box<[Step]>),
+    /// A loop variable or a `set` value, then a path.
+    Slot(u16, Box<[Step]>),
     Loop(u16, LoopAttr),
     Str(Box<str>),
     Int(i64),
@@ -79,7 +102,7 @@ pub(crate) enum CExpr {
     And(Box<CExpr>, Box<CExpr>),
     Or(Box<CExpr>, Box<CExpr>),
     Cmp(CmpOp, Box<CExpr>, Box<CExpr>),
-    Filter(Filt, Box<CExpr>),
+    Filter(Filt, Box<CExpr>, Box<[CExpr]>),
     Default(Box<CExpr>, Box<CExpr>),
 }
 
@@ -103,6 +126,11 @@ pub(crate) enum CNode {
         otherwise: Vec<CNode>,
     },
     Try(Vec<CNode>, Vec<CNode>),
+    /// `{% set %}`: the value goes in `slot` from here on.
+    Set {
+        slot: u16,
+        value: CExpr,
+    },
     /// `include ... with value`: the value goes in `slot` for the body.
     Bind {
         slot: u16,
@@ -193,6 +221,8 @@ struct Var {
     name: String,
     slot: u16,
     item: Ty,
+    /// A loop variable (`loop` refers to the innermost one), or a `set` value.
+    is_loop: bool,
 }
 
 struct Scope {
@@ -222,6 +252,7 @@ struct Frame<'s> {
 
 struct Compiler<'s> {
     sources: &'s [Source],
+    filters: &'s [FilterSig],
     index: &'s HashMap<&'s str, usize>,
     diags: Vec<Diag>,
     /// Above zero while probing a loop body: diagnostics are dropped.
@@ -273,6 +304,7 @@ fn node_at(n: &Node) -> Option<usize> {
         Node::Out(e) => Some(e.at),
         Node::If { arms, .. } => arms.first().map(|a| a.0.at),
         Node::For { list, .. } => Some(list.at),
+        Node::Set { name_at, .. } => Some(*name_at),
         Node::Include { at, .. }
         | Node::Try { at, .. }
         | Node::Extends { at, .. }
@@ -281,7 +313,29 @@ fn node_at(n: &Node) -> Option<usize> {
     }
 }
 
-const FILTERS: &str = "default, upper, lower, trim, length, raw";
+/// The names of the built-in filters.
+pub(crate) const BUILTIN_FILTERS: [&str; 14] = [
+    "default", "upper", "lower", "trim", "length", "truncate", "join", "first", "last", "replace",
+    "date", "number", "raw", "fallback",
+];
+
+const FILTERS: &str =
+    "default, upper, lower, trim, length, truncate, join, first, last, replace, date, number, raw";
+
+/// `true` when a value of type `ty` may be passed where `kind` is declared.
+fn accepts(kind: &Kind, ty: &Ty) -> bool {
+    matches!(
+        (kind, ty),
+        (_, Ty::Unknown)
+            | (Kind::Text, Ty::Text | Ty::Html)
+            | (Kind::Html, Ty::Html)
+            | (Kind::Int, Ty::Int)
+            | (Kind::Float, Ty::Int | Ty::Float)
+            | (Kind::Bool, Ty::Bool)
+            | (Kind::Object(_), Ty::Object(_))
+            | (Kind::List(_), Ty::List(_))
+    )
+}
 
 impl<'s> Compiler<'s> {
     fn error(&mut self, t: usize, at: usize, msg: impl Into<String>) {
@@ -473,6 +527,7 @@ impl<'s> Compiler<'s> {
         scope: &mut Scope,
     ) -> (Vec<CNode>, Ctx) {
         let mut out: Vec<CNode> = Vec::new();
+        let vars_before = scope.vars.len();
         for node in nodes {
             self.nodes += 1;
             if self.nodes > MAX_NODES {
@@ -554,6 +609,7 @@ impl<'s> Compiler<'s> {
                         name: var.clone(),
                         slot,
                         item,
+                        is_loop: true,
                     });
                     self.slots = self.slots.max(scope.next_slot());
                     // A second pass of the body starts where the first ended,
@@ -682,6 +738,31 @@ impl<'s> Compiler<'s> {
                         }
                     }
                 }
+                Node::Set {
+                    name,
+                    name_at,
+                    value,
+                } => {
+                    if name == &scope.root_name {
+                        self.error(
+                            t,
+                            *name_at,
+                            format!("`{name}` already names the template's root value"),
+                        );
+                        continue;
+                    }
+                    let (value, item) = self.expr(t, value, scope);
+                    let slot = scope.next_slot();
+                    self.slots = self.slots.max(slot + 1);
+                    let slot = u16::try_from(slot).unwrap_or(u16::MAX);
+                    scope.vars.push(Var {
+                        name: name.clone(),
+                        slot,
+                        item,
+                        is_loop: false,
+                    });
+                    out.push(CNode::Set { slot, value });
+                }
                 Node::Extends { at, .. } => {
                     self.error(
                         t,
@@ -748,6 +829,7 @@ impl<'s> Compiler<'s> {
                 }
             }
         }
+        scope.vars.truncate(vars_before);
         (out, ctx)
     }
 
@@ -938,12 +1020,17 @@ impl<'s> Compiler<'s> {
         scope: &Scope,
     ) -> (CExpr, Ty) {
         let (cb, tb) = self.expr(t, base, scope);
+        if let Some(i) = self.filters.iter().position(|f| &*f.name == name) {
+            return self.custom_filter(t, e, i, cb, &tb, args, scope);
+        }
         let want = |n: usize| args.len() == n;
         let arity = match name {
-            "default" => 1,
-            "upper" | "lower" | "trim" | "length" | "raw" => 0,
+            "default" | "truncate" | "join" | "date" => 1,
+            "replace" => 2,
+            "upper" | "lower" | "trim" | "length" | "raw" | "first" | "last" | "number" => 0,
             _ => {
-                let hint = suggest(name, FILTERS.split(", "));
+                let custom: Vec<&str> = self.filters.iter().map(|f| &*f.name).collect();
+                let hint = suggest(name, FILTERS.split(", ").chain(custom.iter().copied()));
                 self.error(
                     t,
                     e.at,
@@ -992,7 +1079,100 @@ impl<'s> Compiler<'s> {
                     "lower" => Filt::Lower,
                     _ => Filt::Trim,
                 };
-                (CExpr::Filter(f, Box::new(cb)), Ty::Text)
+                (CExpr::Filter(f, Box::new(cb), Box::new([])), Ty::Text)
+            }
+            "truncate" | "join" | "replace" | "date" => {
+                let (want_base, base_ok) = match name {
+                    "join" => ("a list", matches!(tb, Ty::List(_) | Ty::Unknown)),
+                    "date" => (
+                        "an int (a Unix time in seconds)",
+                        matches!(tb, Ty::Int | Ty::Unknown),
+                    ),
+                    _ => ("text", matches!(tb, Ty::Text | Ty::Unknown)),
+                };
+                if !base_ok {
+                    self.error(
+                        t,
+                        e.at,
+                        format!(
+                            "`{name}` applies to {want_base}, and this is {}",
+                            tb.describe()
+                        ),
+                    );
+                }
+                if let Ty::List(k) = &tb {
+                    if matches!(k, Kind::Object(_) | Kind::List(_)) {
+                        self.error(t, e.at, "`join` needs a list of text or numbers");
+                    }
+                }
+                let mut cargs = Vec::with_capacity(args.len());
+                for (i, a) in args.iter().enumerate() {
+                    let (ca, ta) = self.expr(t, a, scope);
+                    let kind = if name == "truncate" {
+                        Kind::Int
+                    } else {
+                        Kind::Text
+                    };
+                    if !accepts(&kind, &ta) {
+                        self.error(
+                            t,
+                            a.at,
+                            format!(
+                                "argument {} of `{name}` should be {}, and this is {}",
+                                i + 1,
+                                Ty::of(&kind).describe(),
+                                ta.describe()
+                            ),
+                        );
+                    }
+                    cargs.push(ca);
+                }
+                let f = match name {
+                    "truncate" => Filt::Truncate,
+                    "join" => Filt::Join,
+                    "replace" => Filt::Replace,
+                    _ => Filt::Date,
+                };
+                (
+                    CExpr::Filter(f, Box::new(cb), cargs.into_boxed_slice()),
+                    Ty::Text,
+                )
+            }
+            "first" | "last" => {
+                let item = match &tb {
+                    Ty::List(k) => Ty::of(k),
+                    Ty::Unknown => Ty::Unknown,
+                    other => {
+                        self.error(
+                            t,
+                            e.at,
+                            format!(
+                                "`{name}` applies to a list, and this is {}",
+                                other.describe()
+                            ),
+                        );
+                        Ty::Unknown
+                    }
+                };
+                let f = if name == "first" {
+                    Filt::First
+                } else {
+                    Filt::Last
+                };
+                (CExpr::Filter(f, Box::new(cb), Box::new([])), item)
+            }
+            "number" => {
+                if !matches!(tb, Ty::Int | Ty::Float | Ty::Unknown) {
+                    self.error(
+                        t,
+                        e.at,
+                        format!("`number` applies to numbers, and this is {}", tb.describe()),
+                    );
+                }
+                (
+                    CExpr::Filter(Filt::Number, Box::new(cb), Box::new([])),
+                    Ty::Text,
+                )
             }
             "length" => {
                 if !matches!(tb, Ty::Text | Ty::Html | Ty::List(_) | Ty::Unknown) {
@@ -1005,7 +1185,10 @@ impl<'s> Compiler<'s> {
                         ),
                     );
                 }
-                (CExpr::Filter(Filt::Length, Box::new(cb)), Ty::Int)
+                (
+                    CExpr::Filter(Filt::Length, Box::new(cb), Box::new([])),
+                    Ty::Int,
+                )
             }
             _ => {
                 self.error(t, e.at, "`raw` must be the last filter of an output");
@@ -1014,17 +1197,167 @@ impl<'s> Compiler<'s> {
         }
     }
 
-    fn path(&mut self, t: usize, segs: &[(String, usize)], scope: &Scope) -> (CExpr, Ty) {
-        let (first, at) = (&segs[0].0, segs[0].1);
+    #[allow(clippy::too_many_arguments)]
+    fn custom_filter(
+        &mut self,
+        t: usize,
+        e: &Expr,
+        i: usize,
+        cb: CExpr,
+        tb: &Ty,
+        args: &[Expr],
+        scope: &Scope,
+    ) -> (CExpr, Ty) {
+        let sig = &self.filters[i];
+        let (name, params, returns) = (sig.name.clone(), sig.params.clone(), sig.returns.clone());
+        if matches!(tb, Ty::Object(_)) {
+            self.error(
+                t,
+                e.at,
+                format!("`{name}` applies to values, and this is an object"),
+            );
+        }
+        if args.len() != params.len() {
+            let n = params.len();
+            self.error(
+                t,
+                e.at,
+                format!(
+                    "`{name}` takes {n} argument{}",
+                    if n == 1 { "" } else { "s" }
+                ),
+            );
+            return (cb, Ty::Unknown);
+        }
+        let mut cargs = Vec::with_capacity(args.len());
+        for (k, (a, kind)) in args.iter().zip(params.iter()).enumerate() {
+            let (ca, ta) = self.expr(t, a, scope);
+            if !accepts(kind, &ta) {
+                self.error(
+                    t,
+                    a.at,
+                    format!(
+                        "argument {} of `{name}` should be {}, and this is {}",
+                        k + 1,
+                        Ty::of(kind).describe(),
+                        ta.describe()
+                    ),
+                );
+            }
+            cargs.push(ca);
+        }
+        let id = u16::try_from(i).unwrap_or(u16::MAX);
+        (
+            CExpr::Filter(Filt::Custom(id), Box::new(cb), cargs.into_boxed_slice()),
+            Ty::of(&returns),
+        )
+    }
+
+    /// One step from an object of schema `s` to its field or method `seg`.
+    fn step(
+        &mut self,
+        t: usize,
+        s: &Schema,
+        prev: &str,
+        seg: &Seg,
+        scope: &Scope,
+    ) -> Option<(Step, Ty)> {
+        let name = seg.name.as_str();
+        match &seg.args {
+            None => {
+                if let Some((id, kind)) = s.field(name) {
+                    return Some((Step::Field(id), Ty::of(kind)));
+                }
+                if s.method(name).is_some() {
+                    self.error(
+                        t,
+                        seg.at,
+                        format!("`{name}` is a method of `{prev}`; call it: `{name}(...)`"),
+                    );
+                } else {
+                    let hint = suggest(name, s.names());
+                    self.error(
+                        t,
+                        seg.at,
+                        format!("`{prev}` ({}) has no field `{name}`{hint}", s.name()),
+                    );
+                }
+                None
+            }
+            Some(args) => {
+                let Some((id, params, ret)) = s.method(name) else {
+                    if s.field(name).is_some() {
+                        self.error(
+                            t,
+                            seg.at,
+                            format!("`{name}` is a field of `{prev}`, not a method; drop the `()`"),
+                        );
+                    } else {
+                        let hint = suggest(name, s.names());
+                        self.error(
+                            t,
+                            seg.at,
+                            format!("`{prev}` ({}) has no method `{name}`{hint}", s.name()),
+                        );
+                    }
+                    return None;
+                };
+                let (params, ret) = (params.to_vec(), ret.clone());
+                if args.len() != params.len() {
+                    let n = params.len();
+                    self.error(
+                        t,
+                        seg.at,
+                        format!(
+                            "`{name}` takes {n} argument{}",
+                            if n == 1 { "" } else { "s" }
+                        ),
+                    );
+                    return None;
+                }
+                let mut cargs = Vec::with_capacity(args.len());
+                for (k, (a, kind)) in args.iter().zip(params.iter()).enumerate() {
+                    let (ca, ta) = self.expr(t, a, scope);
+                    if !accepts(kind, &ta) {
+                        self.error(
+                            t,
+                            a.at,
+                            format!(
+                                "argument {} of `{name}` should be {}, and this is {}",
+                                k + 1,
+                                Ty::of(kind).describe(),
+                                ta.describe()
+                            ),
+                        );
+                    }
+                    cargs.push(ca);
+                }
+                Some((Step::Call(id, cargs.into_boxed_slice()), Ty::of(&ret)))
+            }
+        }
+    }
+
+    fn path(&mut self, t: usize, segs: &[Seg], scope: &Scope) -> (CExpr, Ty) {
+        let (first, at) = (&segs[0].name, segs[0].at);
+        if segs[0].args.is_some() {
+            self.error(
+                t,
+                at,
+                format!(
+                    "unknown function `{first}`; methods are called on a value: `page.{first}(...)`"
+                ),
+            );
+            return (CExpr::Bool(false), Ty::Unknown);
+        }
         let (mut ty, base): (Ty, Option<u16>) =
             if let Some(v) = scope.vars.iter().rev().find(|v| &v.name == first) {
                 (v.item.clone(), Some(v.slot))
             } else if first == "loop" {
-                let Some(v) = scope.vars.last() else {
+                let Some(v) = scope.vars.iter().rev().find(|v| v.is_loop) else {
                     self.error(t, at, "`loop` is only available inside a `for`");
                     return (CExpr::Bool(false), Ty::Unknown);
                 };
-                let attr = match segs.get(1).map(|s| s.0.as_str()) {
+                let attr = match segs.get(1).map(|s| s.name.as_str()) {
                     Some("index") => (LoopAttr::Index, Ty::Int),
                     Some("index0") => (LoopAttr::Index0, Ty::Int),
                     Some("revindex") => (LoopAttr::RevIndex, Ty::Int),
@@ -1034,14 +1367,18 @@ impl<'s> Compiler<'s> {
                     _ => {
                         self.error(
                             t,
-                            segs.get(1).map_or(at, |s| s.1),
+                            segs.get(1).map_or(at, |s| s.at),
                             "`loop` has index, index0, revindex, first, last, and length",
                         );
                         return (CExpr::Bool(false), Ty::Unknown);
                     }
                 };
                 if let Some(extra) = segs.get(2) {
-                    self.error(t, extra.1, format!("`loop.{}` has no fields", segs[1].0));
+                    self.error(
+                        t,
+                        extra.at,
+                        format!("`loop.{}` has no fields", segs[1].name),
+                    );
                 }
                 return (CExpr::Loop(v.slot, attr.0), attr.1);
             } else if first == &scope.root_name && scope.root_slot.is_some() {
@@ -1066,34 +1403,27 @@ impl<'s> Compiler<'s> {
             };
         let mut ids = Vec::with_capacity(segs.len() - 1);
         let mut prev = first.as_str();
-        for (name, sat) in &segs[1..] {
+        for seg in &segs[1..] {
             match &ty {
-                Ty::Object(s) => match s.field(name) {
-                    Some((id, kind)) => {
-                        ids.push(id);
-                        ty = Ty::of(kind);
-                    }
-                    None => {
-                        let hint = suggest(name, s.names());
-                        self.error(
-                            t,
-                            *sat,
-                            format!("`{prev}` ({}) has no field `{name}`{hint}", s.name()),
-                        );
+                Ty::Object(s) => {
+                    let s = s.clone();
+                    let Some((step, next)) = self.step(t, &s, prev, seg, scope) else {
                         return (CExpr::Bool(false), Ty::Unknown);
-                    }
-                },
+                    };
+                    ids.push(step);
+                    ty = next;
+                }
                 Ty::Unknown => return (CExpr::Bool(false), Ty::Unknown),
                 other => {
                     self.error(
                         t,
-                        *sat,
+                        seg.at,
                         format!("`{prev}` is {} and has no fields", other.describe()),
                     );
                     return (CExpr::Bool(false), Ty::Unknown);
                 }
             }
-            prev = name;
+            prev = &seg.name;
         }
         let ids = ids.into_boxed_slice();
         let ce = match base {
@@ -1143,7 +1473,10 @@ fn distance(a: &str, b: &str) -> usize {
 
 /// Compiles every source. Returns the programs (in source order) or every
 /// diagnostic.
-pub(crate) fn compile_all(sources: &[Source]) -> Result<Vec<Program>, Vec<Diag>> {
+pub(crate) fn compile_all(
+    sources: &[Source],
+    filters: &[FilterSig],
+) -> Result<Vec<Program>, Vec<Diag>> {
     let mut diags = Vec::new();
     let mut index: HashMap<&str, usize> = HashMap::with_capacity(sources.len());
     for (i, s) in sources.iter().enumerate() {
@@ -1166,6 +1499,7 @@ pub(crate) fn compile_all(sources: &[Source]) -> Result<Vec<Program>, Vec<Diag>>
     }
     let mut c = Compiler {
         sources,
+        filters,
         index: &index,
         diags,
         quiet: 0,

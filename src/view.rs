@@ -79,6 +79,14 @@ pub trait View {
         let _ = out;
     }
 
+    /// Answers a method the schema declared with
+    /// [`SchemaBuilder::method`], called with arguments of the declared
+    /// kinds. The default answers nothing.
+    fn call<'s>(&'s self, id: FieldId, args: &[Value<'_>]) -> Computed<'s> {
+        let _ = (id, args);
+        Computed::Value(Value::Absent)
+    }
+
     /// The plain-text form of a value that renders itself, used where markup
     /// cannot go: an attribute, a URL, a script, or a style. The engine
     /// escapes it for the place. The default has none and fails, which
@@ -90,6 +98,44 @@ pub trait View {
     fn text(&self, out: &mut String) -> Result<(), Failed> {
         let _ = out;
         Err(Failed::new("this value has no text form"))
+    }
+}
+
+/// What a method or an application filter returns: a value borrowed from
+/// the view, or text computed for this call.
+#[derive(Debug)]
+pub enum Computed<'a> {
+    /// A value, borrowed or scalar.
+    Value(Value<'a>),
+    /// Text built for this call, escaped like [`Value::Text`].
+    Text(String),
+}
+
+impl<'a> From<Value<'a>> for Computed<'a> {
+    fn from(v: Value<'a>) -> Self {
+        Self::Value(v)
+    }
+}
+
+impl From<String> for Computed<'_> {
+    fn from(s: String) -> Self {
+        Self::Text(s)
+    }
+}
+
+/// An application filter, as registered with
+/// [`Builder::filter`](crate::Builder::filter).
+pub(crate) trait FilterFn: Send + Sync + 'static {
+    /// Applies the filter to `value` with the template's arguments.
+    fn apply<'v>(&self, value: Value<'v>, args: &[Value<'_>]) -> Computed<'v>;
+}
+
+impl<F> FilterFn for F
+where
+    F: for<'v, 'w> Fn(Value<'v>, &[Value<'w>]) -> Computed<'v> + Send + Sync + 'static,
+{
+    fn apply<'v>(&self, value: Value<'v>, args: &[Value<'_>]) -> Computed<'v> {
+        self(value, args)
     }
 }
 
@@ -377,6 +423,8 @@ pub struct Schema(Arc<SchemaInner>);
 struct SchemaInner {
     name: Box<str>,
     fields: Vec<(Box<str>, Kind)>,
+    /// For each entry of `fields`: its parameters when it is a method.
+    params: Vec<Option<Box<[Kind]>>>,
     renders: bool,
 }
 
@@ -387,6 +435,7 @@ impl Schema {
         SchemaBuilder {
             name: name.into(),
             fields: Vec::new(),
+            params: Vec::new(),
             renders: false,
         }
     }
@@ -418,11 +467,18 @@ impl Schema {
     /// The id and kind of the field called `name`.
     #[must_use]
     pub fn field(&self, name: &str) -> Option<(FieldId, &Kind)> {
-        self.0
-            .fields
-            .iter()
-            .position(|(n, _)| &**n == name)
-            .map(|i| (FieldId(i as u16), &self.0.fields[i].1))
+        let i = self.0.fields.iter().position(|(n, _)| &**n == name)?;
+        self.0.params[i]
+            .is_none()
+            .then(|| (FieldId(i as u16), &self.0.fields[i].1))
+    }
+
+    /// The id, parameter kinds, and return kind of the method called `name`.
+    #[must_use]
+    pub fn method(&self, name: &str) -> Option<(FieldId, &[Kind], &Kind)> {
+        let i = self.0.fields.iter().position(|(n, _)| &**n == name)?;
+        let params = self.0.params[i].as_deref()?;
+        Some((FieldId(i as u16), params, &self.0.fields[i].1))
     }
 
     /// The field names, in id order.
@@ -447,6 +503,7 @@ impl fmt::Debug for Schema {
 pub struct SchemaBuilder {
     name: Box<str>,
     fields: Vec<(Box<str>, Kind)>,
+    params: Vec<Option<Box<[Kind]>>>,
     renders: bool,
 }
 
@@ -468,6 +525,23 @@ impl SchemaBuilder {
             "luminess: too many fields"
         );
         self.fields.push((name.into(), kind));
+        self.params.push(None);
+        self
+    }
+
+    /// Adds a method: a value computed from arguments, such as
+    /// `variations.options("size")`. A template calls it with arguments of
+    /// these kinds, checked at compile time, and [`View::call`] answers it.
+    /// A method without parameters is called with `()`.
+    ///
+    /// # Panics
+    ///
+    /// As [`SchemaBuilder::field`].
+    pub fn method(mut self, name: &str, params: &[Kind], returns: Kind) -> Self {
+        self = self.field(name, returns);
+        if let Some(last) = self.params.last_mut() {
+            *last = Some(params.into());
+        }
         self
     }
 
@@ -519,6 +593,7 @@ impl SchemaBuilder {
         Schema(Arc::new(SchemaInner {
             name: self.name,
             fields: self.fields,
+            params: self.params,
             renders: self.renders,
         }))
     }
