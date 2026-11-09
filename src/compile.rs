@@ -13,6 +13,9 @@ use crate::{
 /// How deep includes may nest.
 pub(crate) const MAX_INCLUDE_DEPTH: usize = 8;
 
+/// How long an `extends` chain may be.
+pub(crate) const MAX_EXTENDS_DEPTH: usize = 8;
+
 /// The most compiled nodes one template may have after includes are inlined.
 pub(crate) const MAX_NODES: usize = 1 << 20;
 
@@ -93,6 +96,12 @@ pub(crate) enum CNode {
         otherwise: Vec<CNode>,
     },
     Try(Vec<CNode>, Vec<CNode>),
+    /// `include ... with value`: the value goes in `slot` for the body.
+    Bind {
+        slot: u16,
+        value: CExpr,
+        body: Vec<CNode>,
+    },
 }
 
 /// One compiled template.
@@ -182,7 +191,26 @@ struct Var {
 struct Scope {
     root_name: String,
     root: Schema,
+    /// The slot holding the root value, when it is not the rendered view
+    /// (`include ... with value`).
+    root_slot: Option<u16>,
+    /// The first slot this scope's loops may use.
+    base: usize,
     vars: Vec<Var>,
+}
+
+impl Scope {
+    fn next_slot(&self) -> usize {
+        self.base + self.vars.len()
+    }
+}
+
+/// The blocks of one `extends` chain: for each name, its definitions from the
+/// most derived template to the base, with the template each one is in.
+struct Frame<'s> {
+    defs: HashMap<&'s str, Vec<(usize, &'s [Node])>>,
+    /// Blocks being compiled: (name, which definition).
+    active: Vec<(&'s str, usize)>,
 }
 
 struct Compiler<'s> {
@@ -195,11 +223,60 @@ struct Compiler<'s> {
     stack: Vec<(usize, usize)>,
     nodes: usize,
     slots: usize,
+    frames: Vec<Frame<'s>>,
+}
+
+/// Every block definition in `nodes`, nested ones included.
+fn collect_blocks<'s>(nodes: &'s [Node], out: &mut Vec<(&'s str, usize, &'s [Node])>) {
+    for n in nodes {
+        match n {
+            Node::Block { name, body, at } => {
+                out.push((name, *at, body));
+                collect_blocks(body, out);
+            }
+            Node::If { arms, otherwise } => {
+                for (_, b) in arms {
+                    collect_blocks(b, out);
+                }
+                if let Some(b) = otherwise {
+                    collect_blocks(b, out);
+                }
+            }
+            Node::For {
+                body, otherwise, ..
+            } => {
+                collect_blocks(body, out);
+                if let Some(b) = otherwise {
+                    collect_blocks(b, out);
+                }
+            }
+            Node::Try { body, fallback, .. } => {
+                collect_blocks(body, out);
+                collect_blocks(fallback, out);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Where a node starts, for error messages.
+fn node_at(n: &Node) -> Option<usize> {
+    match n {
+        Node::Text(r) => Some(r.start),
+        Node::Out(e) => Some(e.at),
+        Node::If { arms, .. } => arms.first().map(|a| a.0.at),
+        Node::For { list, .. } => Some(list.at),
+        Node::Include { at, .. }
+        | Node::Try { at, .. }
+        | Node::Extends { at, .. }
+        | Node::Block { at, .. }
+        | Node::Super { at } => Some(*at),
+    }
 }
 
 const FILTERS: &str = "default, upper, lower, trim, length, raw";
 
-impl Compiler<'_> {
+impl<'s> Compiler<'s> {
     fn error(&mut self, t: usize, at: usize, msg: impl Into<String>) {
         if self.quiet > 0 {
             return;
@@ -215,16 +292,26 @@ impl Compiler<'_> {
 
     fn template(&mut self, t: usize) -> Option<Program> {
         let src = &self.sources[t];
-        let Ok(ast) = &src.ast else { return None };
+        if src.ast.is_err() {
+            return None;
+        }
         let mut scope = Scope {
             root_name: src.schema.name().to_owned(),
             root: src.schema.clone(),
+            root_slot: None,
+            base: 0,
             vars: Vec::new(),
         };
         self.nodes = 0;
         self.slots = 0;
         let before = self.diags.len();
-        let (nodes, end) = self.nodes(t, ast, Ctx::Text, &mut scope);
+        let (root, frame) = self.layout(t)?;
+        let Ok(ast) = &self.sources[root].ast else {
+            return None;
+        };
+        self.frames.push(frame);
+        let (nodes, end) = self.nodes(root, ast, Ctx::Text, &mut scope);
+        let _ = self.frames.pop();
         if end != Ctx::Text && self.diags.len() == before {
             let at = src.src.len();
             self.error(
@@ -246,10 +333,135 @@ impl Compiler<'_> {
         })
     }
 
+    /// Follows `extends` from `t` to the base template. Returns the base and
+    /// the blocks of the whole chain, or `None` after reporting an error.
+    fn layout(&mut self, t: usize) -> Option<(usize, Frame<'s>)> {
+        let sources = self.sources;
+        let mut chain = vec![t];
+        let mut cur = t;
+        loop {
+            let Ok(ast) = &sources[cur].ast else {
+                return None;
+            };
+            let Some((name, at)) = self.extends_of(cur, ast)? else {
+                break;
+            };
+            let Some(&parent) = self.index.get(name) else {
+                let mut names: Vec<&str> = self.index.keys().copied().collect();
+                names.sort_unstable();
+                let hint = suggest(name, names.iter().copied());
+                self.error(cur, at, format!("unknown template `{name}`{hint}"));
+                return None;
+            };
+            if chain.contains(&parent) {
+                self.error(cur, at, format!("`{name}` extends itself"));
+                return None;
+            }
+            if chain.len() > MAX_EXTENDS_DEPTH {
+                self.error(cur, at, "`extends` chains too deeply");
+                return None;
+            }
+            chain.push(parent);
+            cur = parent;
+        }
+        let mut defs: HashMap<&'s str, Vec<(usize, &'s [Node])>> = HashMap::new();
+        let mut ok = true;
+        for (level, &ti) in chain.iter().enumerate() {
+            let Ok(ast) = &sources[ti].ast else {
+                return None;
+            };
+            let mut found = Vec::new();
+            collect_blocks(ast, &mut found);
+            let mut seen: Vec<&str> = Vec::new();
+            for (name, at, body) in found {
+                if seen.contains(&name) {
+                    self.error(ti, at, format!("block `{name}` is defined twice"));
+                    ok = false;
+                    continue;
+                }
+                seen.push(name);
+                // A child's block must exist further up, or it would never
+                // be rendered: most often a typo.
+                let is_base = level + 1 == chain.len();
+                if !is_base {
+                    let mut above = Vec::new();
+                    for &up in &chain[level + 1..] {
+                        if let Ok(a) = &sources[up].ast {
+                            collect_blocks(a, &mut above);
+                        }
+                    }
+                    if !above.iter().any(|(n, _, _)| *n == name) {
+                        let names = above.iter().map(|(n, _, _)| *n);
+                        let hint = suggest(name, names);
+                        let base = &sources[chain[chain.len() - 1]].name;
+                        self.error(ti, at, format!("block `{name}` is not in `{base}`{hint}"));
+                        ok = false;
+                        continue;
+                    }
+                }
+                defs.entry(name).or_default().push((ti, body));
+            }
+        }
+        ok.then(|| {
+            (
+                cur,
+                Frame {
+                    defs,
+                    active: Vec::new(),
+                },
+            )
+        })
+    }
+
+    /// The `extends` of template `t`, after checking that it comes first and
+    /// that everything else at the top is a block. `None` inside the result
+    /// means the template extends nothing; `None` outside means an error.
+    #[allow(clippy::option_option)]
+    fn extends_of(&mut self, t: usize, ast: &'s [Node]) -> Option<Option<(&'s str, usize)>> {
+        let src = &self.sources[t].src;
+        let blank = |n: &Node| matches!(n, Node::Text(r) if src[r.clone()].trim().is_empty());
+        let mut first = None;
+        for (i, n) in ast.iter().enumerate() {
+            if let Node::Extends { name, at } = n {
+                if ast[..i].iter().all(blank) && first.is_none() {
+                    first = Some((name.as_str(), *at));
+                } else {
+                    self.error(
+                        t,
+                        *at,
+                        "`extends` must be the first statement of a template",
+                    );
+                    return None;
+                }
+            }
+        }
+        if first.is_some() {
+            for n in ast {
+                match n {
+                    Node::Extends { .. } | Node::Block { .. } => {}
+                    n if blank(n) => {}
+                    Node::Text(r) => {
+                        self.error(t, r.start, "a template that extends another holds only blocks; this text would never be written");
+                        return None;
+                    }
+                    _ => {
+                        self.error(
+                            t,
+                            node_at(n).unwrap_or(0),
+                            "a template that extends another holds only blocks; move this into one",
+                        );
+                        return None;
+                    }
+                }
+            }
+        }
+        Some(first)
+    }
+
     fn nodes(
         &mut self,
         t: usize,
-        nodes: &[Node],
+        nodes: &'s [Node],
         mut ctx: Ctx,
         scope: &mut Scope,
     ) -> (Vec<CNode>, Ctx) {
@@ -330,13 +542,13 @@ impl Compiler<'_> {
                             format!("`{var}` already names the template's root value"),
                         );
                     }
-                    let slot = u16::try_from(scope.vars.len()).unwrap_or(u16::MAX);
+                    let slot = u16::try_from(scope.next_slot()).unwrap_or(u16::MAX);
                     scope.vars.push(Var {
                         name: var.clone(),
                         slot,
                         item,
                     });
-                    self.slots = self.slots.max(scope.vars.len());
+                    self.slots = self.slots.max(scope.next_slot());
                     // A second pass of the body starts where the first ended,
                     // so probe the body first and compile it from the join.
                     let start = ctx;
@@ -380,7 +592,7 @@ impl Compiler<'_> {
                         otherwise: cother,
                     });
                 }
-                Node::Include { name, at } => {
+                Node::Include { name, at, with } => {
                     let Some(&inc) = self.index.get(name.as_str()) else {
                         let mut names: Vec<&str> = self.index.keys().copied().collect();
                         names.sort_unstable();
@@ -396,12 +608,59 @@ impl Compiler<'_> {
                         self.error(t, *at, "includes nest too deeply");
                         continue;
                     }
-                    let Ok(ast) = &self.sources[inc].ast else {
+                    if self.sources[inc].ast.is_err() {
                         self.error(t, *at, format!("`{name}` has errors of its own"));
                         continue;
+                    }
+                    let bound = match with {
+                        None => None,
+                        Some(e) => {
+                            let (value, ty) = self.expr(t, e, scope);
+                            match ty {
+                                Ty::Object(schema) => Some((value, schema)),
+                                Ty::Unknown => continue,
+                                other => {
+                                    self.error(
+                                        t,
+                                        e.at,
+                                        format!(
+                                            "`include ... with` needs an object, and this is {}",
+                                            other.describe()
+                                        ),
+                                    );
+                                    continue;
+                                }
+                            }
+                        }
                     };
                     self.stack.push((t, *at));
-                    let (inner, end) = self.nodes(inc, ast, ctx, scope);
+                    let Some((root, frame)) = self.layout(inc) else {
+                        let _ = self.stack.pop();
+                        continue;
+                    };
+                    let Ok(ast) = &self.sources[root].ast else {
+                        let _ = self.stack.pop();
+                        continue;
+                    };
+                    self.frames.push(frame);
+                    let (inner, end) = match bound {
+                        None => self.nodes(root, ast, ctx, scope),
+                        Some((value, schema)) => {
+                            let slot = scope.next_slot();
+                            let mut sub = Scope {
+                                root_name: self.sources[inc].schema.name().to_owned(),
+                                root: schema,
+                                root_slot: Some(u16::try_from(slot).unwrap_or(u16::MAX)),
+                                base: slot + 1,
+                                vars: Vec::new(),
+                            };
+                            self.slots = self.slots.max(slot + 1);
+                            let (body, end) = self.nodes(root, ast, ctx, &mut sub);
+                            let slot = u16::try_from(slot).unwrap_or(u16::MAX);
+                            (vec![CNode::Bind { slot, value, body }], end)
+                        }
+                    };
+                    let _ = self.frames.pop();
                     let _ = self.stack.pop();
                     ctx = end;
                     for n in inner {
@@ -415,6 +674,62 @@ impl Compiler<'_> {
                             (_, n) => out.push(n),
                         }
                     }
+                }
+                Node::Extends { at, .. } => {
+                    self.error(
+                        t,
+                        *at,
+                        "`extends` must be the first statement of a template",
+                    );
+                }
+                Node::Block { name, at, .. } => {
+                    let Some(frame) = self.frames.last_mut() else {
+                        continue;
+                    };
+                    if frame.active.iter().any(|(n, _)| *n == name.as_str()) {
+                        self.error(t, *at, format!("block `{name}` ends up inside itself"));
+                        continue;
+                    }
+                    let Some(&(dt, body)) = frame.defs.get(name.as_str()).and_then(|d| d.first())
+                    else {
+                        continue;
+                    };
+                    let key: &'s str = frame
+                        .defs
+                        .get_key_value(name.as_str())
+                        .map_or("", |(k, _)| k);
+                    frame.active.push((key, 0));
+                    let (inner, end) = self.nodes(dt, body, ctx, scope);
+                    if let Some(f) = self.frames.last_mut() {
+                        let _ = f.active.pop();
+                    }
+                    ctx = end;
+                    out.extend(inner);
+                }
+                Node::Super { at } => {
+                    let Some(frame) = self.frames.last_mut() else {
+                        continue;
+                    };
+                    let Some(&(name, level)) = frame.active.last() else {
+                        self.error(t, *at, "`super()` is only available inside a block");
+                        continue;
+                    };
+                    let Some(&(dt, body)) = frame.defs.get(name).and_then(|d| d.get(level + 1))
+                    else {
+                        self.error(
+                            t,
+                            *at,
+                            format!("block `{name}` has no parent version for `super()`"),
+                        );
+                        continue;
+                    };
+                    frame.active.push((name, level + 1));
+                    let (inner, end) = self.nodes(dt, body, ctx, scope);
+                    if let Some(f) = self.frames.last_mut() {
+                        let _ = f.active.pop();
+                    }
+                    ctx = end;
+                    out.extend(inner);
                 }
                 Node::Try { body, fallback, at } => {
                     let start = ctx;
@@ -699,6 +1014,8 @@ impl Compiler<'_> {
                     self.error(t, extra.1, format!("`loop.{}` has no fields", segs[1].0));
                 }
                 return (CExpr::Loop(v.slot, attr.0), attr.1);
+            } else if first == &scope.root_name && scope.root_slot.is_some() {
+                (Ty::Object(scope.root.clone()), scope.root_slot)
             } else if first == &scope.root_name {
                 (Ty::Object(scope.root.clone()), None)
             } else {
@@ -825,6 +1142,7 @@ pub(crate) fn compile_all(sources: &[Source]) -> Result<Vec<Program>, Vec<Diag>>
         stack: Vec::new(),
         nodes: 0,
         slots: 0,
+        frames: Vec::new(),
     };
     let mut programs = Vec::with_capacity(sources.len());
     for t in 0..sources.len() {

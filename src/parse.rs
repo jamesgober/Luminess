@@ -62,10 +62,27 @@ pub(crate) enum Node {
     Include {
         name: String,
         at: usize,
+        /// `with expr`: the value the partial sees as its root.
+        with: Option<Expr>,
     },
     Try {
         body: Vec<Node>,
         fallback: Vec<Node>,
+        at: usize,
+    },
+    /// `{% extends "name" %}`.
+    Extends {
+        name: String,
+        at: usize,
+    },
+    /// `{% block name %}...{% endblock %}`.
+    Block {
+        name: String,
+        body: Vec<Node>,
+        at: usize,
+    },
+    /// `{{ super() }}`: the parent's version of the enclosing block.
+    Super {
         at: usize,
     },
 }
@@ -452,6 +469,8 @@ enum Stop {
     EndFor(usize),
     Fallback(usize),
     EndTry(usize),
+    /// `{% endblock %}`, with the name it repeats, if any.
+    EndBlock(usize, Option<String>),
 }
 
 impl Stop {
@@ -464,6 +483,7 @@ impl Stop {
             Self::EndFor(_) => "`{% endfor %}`",
             Self::Fallback(_) => "`{% fallback %}`",
             Self::EndTry(_) => "`{% endtry %}`",
+            Self::EndBlock(..) => "`{% endblock %}`",
         }
     }
 
@@ -475,7 +495,8 @@ impl Stop {
             | Self::EndIf(a)
             | Self::EndFor(a)
             | Self::Fallback(a)
-            | Self::EndTry(a) => *a,
+            | Self::EndTry(a)
+            | Self::EndBlock(a, _) => *a,
         }
     }
 }
@@ -494,6 +515,9 @@ impl P<'_> {
             self.pos += 1;
             match tok {
                 Tok::Text(r) => nodes.push(Node::Text(r)),
+                Tok::Expr { inner, at } if self.src[inner.clone()].trim() == "super()" => {
+                    nodes.push(Node::Super { at });
+                }
                 Tok::Expr { inner, at } => {
                     let e = parse_expr(&self.src[inner.clone()], inner.start).map_err(|e| {
                         if e.msg == "empty expression" {
@@ -540,7 +564,7 @@ impl P<'_> {
             }
         };
         let child = depth + 1;
-        if matches!(word, "if" | "for" | "try") && child > MAX_DEPTH {
+        if matches!(word, "if" | "for" | "try" | "block") && child > MAX_DEPTH {
             return err(at, "statements nested too deeply");
         }
         match word {
@@ -639,10 +663,62 @@ impl P<'_> {
                         nodes.push(Node::Include {
                             name: name.clone(),
                             at,
+                            with: None,
                         });
                         Ok(None)
                     }
-                    _ => err(rest_off, "expected `include \"name\"`"),
+                    [(ET::Str(name), _), (ET::Ident(w), _), (_, value_at), ..] if w == "with" => {
+                        let value = parse_expr(&self.src[*value_at..inner.end], *value_at)?;
+                        nodes.push(Node::Include {
+                            name: name.clone(),
+                            at,
+                            with: Some(value),
+                        });
+                        Ok(None)
+                    }
+                    _ => err(
+                        rest_off,
+                        "expected `include \"name\"` or `include \"name\" with value`",
+                    ),
+                }
+            }
+            "extends" => {
+                let toks = etokens(rest, rest_off)?;
+                match toks.as_slice() {
+                    [(ET::Str(name), _)] => {
+                        nodes.push(Node::Extends {
+                            name: name.clone(),
+                            at,
+                        });
+                        Ok(None)
+                    }
+                    _ => err(rest_off, "expected `extends \"name\"`"),
+                }
+            }
+            "block" => {
+                let toks = etokens(rest, rest_off)?;
+                let name = match toks.as_slice() {
+                    [(ET::Ident(n), _)] => n.clone(),
+                    _ => return err(rest_off, "expected `block name`"),
+                };
+                let (body, stop) = self.block(child)?;
+                match stop {
+                    Stop::EndBlock(_, None) => {}
+                    Stop::EndBlock(a, Some(n)) if n != name => {
+                        return err(a, format!("`endblock {n}` closes `block {name}`"));
+                    }
+                    Stop::EndBlock(..) => {}
+                    other => return Self::mismatch(&other, "`{% endblock %}`", at),
+                }
+                nodes.push(Node::Block { name, body, at });
+                Ok(None)
+            }
+            "endblock" => {
+                let toks = etokens(rest, rest_off)?;
+                match toks.as_slice() {
+                    [] => Ok(Some(Stop::EndBlock(at, None))),
+                    [(ET::Ident(n), _)] => Ok(Some(Stop::EndBlock(at, Some(n.clone())))),
+                    _ => err(rest_off, "expected `endblock` or `endblock name`"),
                 }
             }
             "elif" => Ok(Some(Stop::Elif(parse_expr(rest, rest_off)?, at))),
@@ -656,9 +732,7 @@ impl P<'_> {
                 at,
                 "unknown statement `end`; close with `endif`, `endfor`, or `endtry`",
             ),
-            "extends" | "block" | "endblock" | "macro" | "set" => {
-                err(at, format!("`{word}` is not supported yet"))
-            }
+            "macro" | "set" => err(at, format!("`{word}` is not supported yet")),
             other => err(at, format!("unknown statement `{other}`")),
         }
     }

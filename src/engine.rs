@@ -2,8 +2,9 @@
 
 use std::{
     collections::HashMap,
-    fmt,
+    fmt, fs, io,
     marker::PhantomData,
+    path::Path,
     sync::{Arc, PoisonError, RwLock},
 };
 
@@ -84,6 +85,49 @@ impl<V: View> Builder<V> {
         self.sources
             .push((name.into(), source.into(), Some(schema)));
         self
+    }
+
+    /// Adds every file under `dir` whose name ends in `.extension`, named by
+    /// its path below `dir` with `/` between folders and without the
+    /// extension: `partials/nav.html` becomes `partials/nav`. Files are read
+    /// in a fixed order, so errors come out the same way every time.
+    ///
+    /// # Errors
+    ///
+    /// Any error reading the folder or a file, including a file that is not
+    /// UTF-8.
+    pub fn directory(mut self, dir: impl AsRef<Path>, extension: &str) -> io::Result<Self> {
+        let root = dir.as_ref();
+        let suffix = format!(".{}", extension.trim_start_matches('.'));
+        let mut pending = vec![root.to_path_buf()];
+        let mut found = Vec::new();
+        while let Some(d) = pending.pop() {
+            let mut entries = fs::read_dir(&d)?.collect::<Result<Vec<_>, _>>()?;
+            entries.sort_by_key(fs::DirEntry::file_name);
+            for e in entries {
+                let path = e.path();
+                if e.file_type()?.is_dir() {
+                    pending.push(path);
+                    continue;
+                }
+                let Ok(rel) = path.strip_prefix(root) else {
+                    continue;
+                };
+                let parts: Option<Vec<&str>> =
+                    rel.components().map(|c| c.as_os_str().to_str()).collect();
+                let Some(parts) = parts else { continue };
+                let rel = parts.join("/");
+                if let Some(name) = rel.strip_suffix(&suffix) {
+                    found.push((name.to_owned(), path));
+                }
+            }
+        }
+        found.sort();
+        for (name, path) in found {
+            let src = fs::read_to_string(&path)?;
+            self.sources.push((name, src, None));
+        }
+        Ok(self)
     }
 
     /// Compiles every template.

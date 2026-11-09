@@ -37,10 +37,10 @@ The rebuild. Nothing of 0.1's API remains.
 
 ## 0.4.0: composition
 
-- [ ] Layouts: `{% extends "base" %}` with `{% block name %}...{% endblock %}`, `{{ super() }}`, checked at compile time.
-- [ ] `{% include "x" with item %}`: pass a value under a new name to a partial.
-- [ ] Template sources from a directory (`Loader`), names from relative paths, and a reload helper that recompiles a directory into an `Engine`.
-- [ ] Per-template schemas inside one set, documented for multi-type sites.
+- [x] Layouts: `{% extends "base" %}` with `{% block name %}...{% endblock %}`, `{{ super() }}`, multi-level chains, nested blocks, checked at compile time (unknown block names, text outside blocks, cycles, self-containing blocks).
+- [x] `{% include "x" with item %}`: the partial sees one value as its root, checked against that value.
+- [x] Template sources from a folder (`Builder::directory`), names from relative paths; `engine.reload(Engine::builder().directory(..)?)` reloads a theme.
+- [x] Per-template schemas inside one set, documented for multi-type sites.
 
 ## 0.5.0: blocks, fallbacks, and the syntax freeze
 

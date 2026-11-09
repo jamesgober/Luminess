@@ -129,8 +129,13 @@ its own filters; they are checked at compile time like fields.
 and checked at boot, sees the same values as the place it is included from, and
 may not include itself.
 
-Layout inheritance (`{% extends "base" %}` with `{% block content %}...{% endblock %}`)
-follows in 0.4.
+`{% include "name" with value %}` gives the partial one value as its root,
+named by the partial's own schema; the partial is checked against that value.
+
+Layouts: a base template marks replaceable parts with
+`{% block name %}...{% endblock %}` (or `{% endblock name %}`). A template that
+starts with `{% extends "base" %}` holds only blocks; each must exist in the
+base chain. `{{ super() }}` inside a block writes the parent's version.
 
 ## 9. Blocks that fail
 
