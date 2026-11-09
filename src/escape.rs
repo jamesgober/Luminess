@@ -202,9 +202,165 @@ pub fn url_component(s: &str, out: &mut Vec<u8>) {
     }
 }
 
+/// Writes `s` as the content of a JavaScript string literal (single, double,
+/// or backtick quoted). Quotes, backslashes, `/`, `<`, `>`, `&`, `$`, `{`,
+/// `}`, `=`, line breaks, control characters, and U+2028/U+2029 are escaped,
+/// so the content can end neither the string nor the script element around
+/// it.
+///
+/// ```
+/// let mut out = Vec::new();
+/// luminess::escape::js_string("it's </script>", &mut out);
+/// assert_eq!(out, br"it\u0027s \u003C\/script\u003E");
+/// ```
+pub fn js_string(s: &str, out: &mut Vec<u8>) {
+    let b = s.as_bytes();
+    let mut start = 0;
+    let mut i = 0;
+    while i < b.len() {
+        let c = b[i];
+        let short: &[u8] = match c {
+            b'\\' => br"\\",
+            b'/' => br"\/",
+            b'\n' => br"\n",
+            b'\r' => br"\r",
+            b'\t' => br"\t",
+            b'"'
+            | b'\''
+            | b'`'
+            | b'<'
+            | b'>'
+            | b'&'
+            | b'$'
+            | b'{'
+            | b'}'
+            | b'='
+            | 0..=0x1f
+            | 0x7f => b"",
+            // U+2028 and U+2029 end a line in older JavaScript.
+            0xe2 if b.get(i + 1) == Some(&0x80) && matches!(b.get(i + 2), Some(0xa8 | 0xa9)) => {
+                out.extend_from_slice(&b[start..i]);
+                out.extend_from_slice(if b[i + 2] == 0xa8 {
+                    br"\u2028"
+                } else {
+                    br"\u2029"
+                });
+                i += 3;
+                start = i;
+                continue;
+            }
+            _ => {
+                i += 1;
+                continue;
+            }
+        };
+        out.extend_from_slice(&b[start..i]);
+        if short.is_empty() {
+            out.extend_from_slice(br"\u00");
+            out.extend_from_slice(&[HEX[usize::from(c >> 4)], HEX[usize::from(c & 15)]]);
+        } else {
+            out.extend_from_slice(short);
+        }
+        i += 1;
+        start = i;
+    }
+    out.extend_from_slice(&b[start..]);
+}
+
+/// Writes `s` as a double-quoted JavaScript string literal, quotes included.
+///
+/// ```
+/// let mut out = Vec::new();
+/// luminess::escape::js_quoted("a\"b", &mut out);
+/// assert_eq!(out, br#""a\u0022b""#);
+/// ```
+pub fn js_quoted(s: &str, out: &mut Vec<u8>) {
+    out.push(b'"');
+    js_string(s, out);
+    out.push(b'"');
+}
+
+/// Writes `s` for a CSS string: every character other than ASCII letters and
+/// digits becomes a hex escape (`\HH `), which CSS reads back as the same
+/// character and which cannot end the string, the declaration, or the style
+/// element.
+///
+/// ```
+/// let mut out = Vec::new();
+/// luminess::escape::css("a'b;}", &mut out);
+/// assert_eq!(out, br"a\27 b\3b \7d ");
+/// ```
+pub fn css(s: &str, out: &mut Vec<u8>) {
+    for ch in s.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch as u8);
+        } else {
+            let mut buf = [0u8; 8];
+            let mut n = u32::from(ch);
+            let mut p = buf.len();
+            loop {
+                p -= 1;
+                buf[p] = b"0123456789abcdef"[(n & 15) as usize];
+                n >>= 4;
+                if n == 0 {
+                    break;
+                }
+            }
+            out.push(b'\\');
+            out.extend_from_slice(&buf[p..]);
+            out.push(b' ');
+        }
+    }
+}
+
+/// What a CSS value that [`css_value_allowed`] refuses is replaced with.
+pub const BLOCKED_CSS: &str = "blocked";
+
+/// `true` when `s` can be written as a CSS value as it is: only ASCII
+/// letters, digits, spaces, `#`, `%`, `.`, `,`, `-`, and `_`. That covers
+/// colors, lengths, keywords, and font names; anything else (a `(`, a `:`, a
+/// quote, a backslash) could start a function or end the declaration.
+///
+/// ```
+/// use luminess::escape::css_value_allowed;
+/// assert!(css_value_allowed("#ff0000"));
+/// assert!(css_value_allowed("1.5em"));
+/// assert!(!css_value_allowed("red; background: url(x)"));
+/// assert!(!css_value_allowed("expression(alert(1))"));
+/// ```
+#[must_use]
+pub fn css_value_allowed(s: &str) -> bool {
+    s.bytes().all(|c| {
+        c.is_ascii_alphanumeric() || matches!(c, b' ' | b'#' | b'%' | b'.' | b',' | b'-' | b'_')
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn js(s: &str) -> String {
+        let mut o = Vec::new();
+        js_string(s, &mut o);
+        String::from_utf8(o).unwrap()
+    }
+
+    #[test]
+    fn js_escapes() {
+        assert_eq!(js("plain é"), "plain é");
+        assert_eq!(js("\u{2028}\u{2029}"), r"\u2028\u2029");
+        assert_eq!(js("a\u{0}b\u{1f}"), r"a\u0000b\u001F");
+        assert_eq!(js("${x}`"), r"\u0024\u007Bx\u007D\u0060");
+        assert_eq!(js("\\\n"), r"\\\n");
+        assert_eq!(js("\u{2027}"), "\u{2027}");
+    }
+
+    #[test]
+    fn css_escapes() {
+        let mut o = Vec::new();
+        css("é\u{1F600}", &mut o);
+        assert_eq!(o, br"\e9 \1f600 ");
+    }
 
     fn h(s: &str) -> String {
         let mut o = Vec::new();

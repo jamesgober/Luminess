@@ -96,12 +96,16 @@ escaper at compile time. There is nothing to choose in the template.
 | HTML text, `<title>`, `<textarea>` | `& < > " '` as entities |
 | a quoted attribute value | the same, so the value cannot leave the quotes |
 | a URL attribute (`href`, `src`, `action`, ...) | at the start: only `http`, `https`, `mailto`, `tel`, or relative URLs pass, others become `#blocked`; then percent-encoded |
-| inside a `<script>` element or an `on...` attribute | a JavaScript string literal with every quote, `<`, `>`, `&`, and line break escaped |
-| inside a `<style>` element or a `style` attribute | CSS with every character other than letters and digits escaped |
+| JavaScript code (a `<script>` element or an `on...` attribute) | a complete literal: text as a quoted string, numbers, `true`/`false`, absent as `null` |
+| inside a JavaScript string or template literal | the content, with quotes, backslashes, `<`, `>`, `&`, `$`, braces, and line breaks escaped |
+| a CSS value (a `<style>` element or a `style` attribute) | the value as is when it is only letters, digits, spaces, and `# % . , - _`; `blocked` otherwise |
+| inside a CSS string | every character other than letters and digits as a CSS hex escape |
 
 These are compile errors: output in an unquoted attribute value, in a tag name,
-in an attribute name, or inside an HTML comment; a `<script>` or `<style>`
-element left open at the end of the template.
+in an attribute name, inside an HTML comment, `srcdoc`, a JavaScript comment
+or regular expression, a CSS comment, right after `$` in a template literal,
+or in an `on...` or `style` attribute that uses character references; and a
+template that ends inside a tag, attribute, comment, script, or style.
 
 `| raw` writes a text value unescaped. It is allowed in HTML text only. Search a
 theme for `| raw` to review every unescaped value.

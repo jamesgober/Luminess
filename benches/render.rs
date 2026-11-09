@@ -75,6 +75,7 @@ const LAYOUT: &str = r#"<!DOCTYPE html>
     </ul>
   </section>
 </main>
+<script>window.page = { title: {{ page.title }}, year: {{ page.year }}, signedIn: {{ page.signed_in }} };</script>
 <footer>&copy; {{ page.year }} {{ page.site }}{% if page.signed_in %} | <a href="/logout">Sign out</a>{% endif %}</footer>
 </body>
 </html>

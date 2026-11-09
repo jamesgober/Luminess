@@ -386,9 +386,34 @@ fn unsafe_places_fail_at_compile_time() {
         ("<a {{ page.title }}>", "attribute name"),
         ("<{{ page.title }}>", "tag name"),
         ("<!-- {{ page.title }} -->", "comment"),
-        ("<p onclick=\"{{ page.title }}\">", "event-handler"),
-        ("<p style=\"{{ page.title }}\">", "style"),
-        ("<script>{{ page.title }}</script>", "script"),
+        (
+            "<p onclick=\"f(&quot;{{ page.title }}&quot;)\">",
+            "character references",
+        ),
+        (
+            "<p style=\"x: &quot;{{ page.title }}\">",
+            "character references",
+        ),
+        (
+            "<script>// {{ page.title }}
+</script>",
+            "JavaScript comment",
+        ),
+        (
+            "<script>/* {{ page.title }} */</script>",
+            "JavaScript comment",
+        ),
+        (
+            "<script>var r = /a{{ page.title }}/;</script>",
+            "regular expression",
+        ),
+        ("<script>var r = 1 /{{ page.title }};</script>", "after `/`"),
+        ("<script>var s = `${{ page.title }}`;</script>", "after `$`"),
+        ("<style>/* {{ page.title }} */</style>", "CSS comment"),
+        ("<script>var a = 1;", "ends inside JavaScript code"),
+        ("<style>a {", "ends inside a style element"),
+        ("<p title=\"x", "ends inside an attribute value"),
+        ("<!-- x", "ends inside an HTML comment"),
         ("<iframe srcdoc=\"{{ page.title }}\">", "srcdoc"),
         ("<p title=\"{{ page.title | raw }}\">", "HTML text only"),
         ("<p title=\"{{ page.gallery }}\">", "only go in HTML text"),
@@ -516,4 +541,80 @@ fn render_appends() {
     let r = engine.render("t", &page(), &mut out).unwrap();
     assert_eq!(out, b"ab");
     assert_eq!(r.bytes(), 1);
+}
+
+#[test]
+fn scripts() {
+    assert_eq!(
+        render("<script>var t = {{ page.title }};</script>"),
+        r#"<script>var t = "Tom \u0026 \u0022Jerry\u0022 \u003C3";</script>"#
+    );
+    assert_eq!(
+        render("<script>var t = '{{ page.author.name }}';</script>"),
+        r"<script>var t = 'Ann O\u0027Neil';</script>"
+    );
+    assert_eq!(
+        render(
+            "<script>var n = {{ page.views }}, r = {{ page.rating }}, f = {{ page.featured }}, s = {{ page.subtitle }};</script>"
+        ),
+        "<script>var n = 1234, r = 4.5, f = true, s = null;</script>"
+    );
+    assert_eq!(
+        render("<script>var a = `{{ page.title | upper }}`;</script>"),
+        r"<script>var a = `TOM \u0026 \u0022JERRY\u0022 \u003C3`;</script>"
+    );
+    assert_eq!(
+        render("<script>if (/x/.test(s)) { go({{ page.views }}); }</script>"),
+        "<script>if (/x/.test(s)) { go(1234); }</script>"
+    );
+    assert_eq!(
+        render("<button onclick=\"go({{ page.author.name }})\">"),
+        r#"<button onclick="go(&quot;Ann O\u0027Neil&quot;)">"#
+    );
+    assert_eq!(
+        render("<button onclick=\"go('{{ page.author.name }}')\">"),
+        r#"<button onclick="go('Ann O\u0027Neil')">"#
+    );
+    assert_eq!(
+        render("<button onclick=\"a && go({{ page.views }})\">"),
+        "<button onclick=\"a && go(1234)\">"
+    );
+}
+
+#[test]
+fn styles() {
+    #[allow(clippy::items_after_statements)]
+    struct Theme {
+        color: String,
+        font: String,
+    }
+    luminess::view!(Theme as "theme" { color: text, font: text });
+    let engine = Engine::<Theme>::builder()
+        .template(
+            "css",
+            "<style>a { color: {{ theme.color }}; font-family: '{{ theme.font }}'; }</style>",
+        )
+        .template("attr", "<p style=\"color: {{ theme.color }}\">")
+        .build()
+        .unwrap();
+    let ok = Theme {
+        color: "#ff0000".into(),
+        font: "Open Sans".into(),
+    };
+    assert_eq!(
+        engine.render_to_string("css", &ok).unwrap(),
+        r"<style>a { color: #ff0000; font-family: 'Open\20 Sans'; }</style>"
+    );
+    let bad = Theme {
+        color: "red; background: url(x)".into(),
+        font: "a'}</style>".into(),
+    };
+    assert_eq!(
+        engine.render_to_string("css", &bad).unwrap(),
+        r"<style>a { color: blocked; font-family: 'a\27 \7d \3c \2f style\3e '; }</style>"
+    );
+    assert_eq!(
+        engine.render_to_string("attr", &bad).unwrap(),
+        "<p style=\"color: blocked\">"
+    );
 }
