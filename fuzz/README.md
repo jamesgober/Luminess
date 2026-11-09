@@ -1,0 +1,16 @@
+# Fuzzing
+
+Targets:
+
+- `compile`: any bytes as a template through the lexer, parser, compiler, and
+  renderer. Nothing may panic; output is UTF-8.
+- `escape`: any text as a value in HTML text, quoted attributes, a URL, and a
+  query component. The value never leaves its place.
+
+Run (nightly and cargo-fuzz):
+
+```bash
+cd fuzz
+cargo +nightly fuzz run compile seeds/compile -- -max_total_time=600
+cargo +nightly fuzz run escape seeds/escape -- -max_total_time=600
+```
