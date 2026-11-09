@@ -564,7 +564,7 @@ impl<'a> Run<'a, '_> {
             }
             _ => return None,
         };
-        for step in steps.iter() {
+        for step in steps {
             let Step::Field(id) = step else { return None };
             v = match v {
                 Value::View(x) => x.field(*id),
