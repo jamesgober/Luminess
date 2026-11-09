@@ -196,6 +196,18 @@ impl<'a> Run<'a, '_> {
                         }
                     }
                 }
+                CNode::Bind { slot, value, body } => {
+                    let v = match self.eval(value) {
+                        Val::V(v) => v,
+                        Val::Owned(_) => Value::Absent,
+                    };
+                    self.slots[usize::from(*slot)] = Slot {
+                        value: v,
+                        index: 0,
+                        len: 1,
+                    };
+                    self.nodes(body);
+                }
                 CNode::Try(body, fallback) => {
                     let mark = self.out.len();
                     let before = self.fallbacks;

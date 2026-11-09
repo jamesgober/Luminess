@@ -30,7 +30,7 @@ A template engine for Rust that compiles once, at startup, against typed views.
 
 ```toml
 [dependencies]
-luminess = "0.3"
+luminess = "0.4"
 ```
 
 MSRV: Rust 1.85.
@@ -77,6 +77,8 @@ The syntax follows Jinja and Twig.
 {% if page.featured %}...{% elif page.draft %}...{% else %}...{% endif %}
 {% for post in page.posts %}{{ loop.index }}. {{ post.title }}{% else %}No posts.{% endfor %}
 {% include "partials/nav" %}
+{% include "card" with post %}         the partial sees `post` as its own root
+{% extends "base" %}  {% block content %}...{{ super() }}...{% endblock %}
 {% try %}{{ page.stock }}{% fallback %}Stock unknown{% endtry %}
 {# a comment #}   {% raw %}{{ not parsed }}{% endraw %}   {{- trims whitespace -}}
 ```
@@ -90,6 +92,43 @@ Filters: `default(v)`, `upper`, `lower`, `trim`, `length`, `raw`.
 
 False in a condition: `false`, an absent value, zero, the empty string, and
 the empty list.
+
+## Layouts and partials
+
+A base template marks the places a page may replace with `block`:
+
+```text
+{# base #}
+<html><head><title>{% block title %}My site{% endblock %}</title></head>
+<body>{% block content %}{% endblock %}</body></html>
+
+{# post #}
+{% extends "base" %}
+{% block title %}{{ page.title }} | {{ super() }}{% endblock %}
+{% block content %}<article>{{ page.body }}</article>{% endblock %}
+```
+
+A template that extends another holds only blocks, and every block it
+defines must exist further up the chain, so a misspelled block name is a
+compile error. Chains can be several levels deep; `super()` writes the next
+version up.
+
+`{% include "name" %}` inserts a partial that sees the same values as the
+place it is included from. `{% include "card" with post %}` gives the partial
+one value as its root instead, named by the partial's own schema (add it
+with `template_with`). The partial is checked against the value it is given.
+
+Load a whole theme from a folder; names are paths without the extension:
+
+```rust
+let engine = Engine::<Page>::builder().directory("themes/default", "html")?.build()?;
+// themes/default/partials/nav.html is "partials/nav"
+```
+
+One set can serve several view shapes: `template_with(name, source, schema)`
+compiles a template against its own schema, so a product page and a blog
+post can be rendered from the same engine as long as they share the Rust
+view type.
 
 ## Escaping
 

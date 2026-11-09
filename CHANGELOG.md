@@ -6,6 +6,24 @@ All notable changes to `luminess` are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-08
+
+Composition.
+
+### Added
+
+- Layouts: `{% extends "base" %}`, `{% block name %}...{% endblock %}` (the
+  closing tag may repeat the name), and `{{ super() }}`. Chains may be up to
+  8 templates deep and blocks may nest. Compile errors for an unknown parent,
+  a cycle, a block the chain does not have (with a suggestion), text or
+  statements outside blocks in an extending template, `extends` that is not
+  first, a block defined twice, `super()` without a parent version, and a
+  block that would contain itself.
+- `{% include "name" with value %}`: the partial sees `value` as its root,
+  named by its own schema, and is checked against it.
+- `Builder::directory(dir, extension)`: adds every matching file below a
+  folder, named by its relative path without the extension.
+
 ## [0.3.0] - 2026-11-08
 
 Scripts and styles.

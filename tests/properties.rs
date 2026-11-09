@@ -160,7 +160,8 @@ proptest! {
         Just("{% for x in page.title %}"), Just("{% endfor %}"), Just("{% try %}"), Just("{% fallback %}"),
         Just("{% endtry %}"), Just("<a href=\""), Just("\">"), Just("<!--"), Just("-->"), Just("<script>"),
         Just("</script>"), Just("{% raw %}"), Just("{% endraw %}"), Just("{#"), Just("#}"), Just("'"),
-        Just("{{-"), Just("-}}"), Just("<p title='"), Just("{% include \"t\" %}"),
+        Just("{{-"), Just("-}}"), Just("<p title='"), Just("{% block a %}"), Just("{% endblock %}"),
+        Just("{{ super() }}"), Just(r#"{% extends "t" %}"#), Just(r#"{% include "t" with page %}"#), Just("{% include \"t\" %}"),
     ], 0..30)) {
         let src: String = parts.concat();
         if let Ok(t) = Engine::<Page>::builder().template("t", src).compile() {

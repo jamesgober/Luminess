@@ -28,6 +28,7 @@ fuzz_target!(|data: &[u8]| {
     let built = Engine::<Page>::builder()
         .template("t", src)
         .template("part", "<b>{{ page.title }}</b>")
+        .template("base", "<b>{% block a %}x{% endblock %}{% block b %}{% endblock %}</b>")
         .compile();
     if let Ok(t) = built {
         let page = Page {
