@@ -24,6 +24,14 @@ Diagnostics and limits.
 - `Builder::check`: compiles every template and reports the errors without
   consuming the builder or keeping the result.
 
+### Fixed
+
+- Nested `for` loops took time exponential in their depth to compile: each
+  body was compiled twice, so 20 nested loops took about a second and the
+  allowed 64 would never finish (found by fuzzing). A body is now compiled
+  again only when it ends in a different HTML context than it starts in, and
+  both passes count toward the compiled-size limit.
+
 ## [0.7.0] - 2026-11-08
 
 Performance.

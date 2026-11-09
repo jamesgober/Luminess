@@ -91,3 +91,27 @@ fn check_keeps_the_builder() {
     let engine = b.build().unwrap();
     assert_eq!(engine.render_to_string("t", &page()).unwrap(), "T");
 }
+
+#[test]
+fn nested_loops_compile_in_linear_time() {
+    // Found by fuzzing: each loop body used to be compiled twice, so 64
+    // nested loops took 2^64 steps.
+    let t = std::time::Instant::now();
+    for (open, close) in [
+        ("{% for i in page.items %}", "{% endfor %}"),
+        ("{% for i in page.items %}?q", "{% endfor %}"),
+    ] {
+        let src = format!("<a href=\"/a{}x{}\">", open.repeat(64), close.repeat(64));
+        assert!(
+            Engine::<Page>::builder()
+                .template("t", src)
+                .compile()
+                .is_ok()
+        );
+    }
+    assert!(
+        t.elapsed() < std::time::Duration::from_secs(2),
+        "{:?}",
+        t.elapsed()
+    );
+}
