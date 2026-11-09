@@ -78,6 +78,19 @@ pub trait View {
     fn fallback(&self, out: &mut Output<'_>) {
         let _ = out;
     }
+
+    /// The plain-text form of a value that renders itself, used where markup
+    /// cannot go: an attribute, a URL, a script, or a style. The engine
+    /// escapes it for the place. The default has none and fails, which
+    /// writes the template's `| fallback(...)` text, or nothing.
+    ///
+    /// # Errors
+    ///
+    /// A [`Failed`] when there is no text form or it cannot be produced.
+    fn text(&self, out: &mut String) -> Result<(), Failed> {
+        let _ = out;
+        Err(Failed::new("this value has no text form"))
+    }
 }
 
 /// A sequence a template can loop over.

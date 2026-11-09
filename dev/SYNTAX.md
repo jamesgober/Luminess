@@ -119,6 +119,7 @@ theme for `| raw` to review every unescaped value.
 | `trim` | remove leading and trailing whitespace |
 | `length` | the number of items in a list or characters in a text |
 | `raw` | unescaped output (see section 6) |
+| `fallback("text")` | for a block that renders itself: the text written when it fails |
 
 Filters chain: `{{ post.title | trim | upper }}`. An application can register
 its own filters; they are checked at compile time like fields.

@@ -6,6 +6,26 @@ All notable changes to `luminess` are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-08
+
+Blocks and fallbacks.
+
+### Added
+
+- `{{ block | fallback("text") }}`: the text written when a block that renders
+  itself fails, in place of `View::fallback`.
+- `View::text`: a block's plain-text form. A block may now be written in an
+  attribute value, a URL, a script, or a style; its text form is escaped for
+  the place. Without one, the fallback text (or nothing) is written and the
+  failure is reported.
+- `Rendered::failures` lists the reasons of every block failure, up to
+  `Rendered::MAX_FAILURES` (16).
+
+### Changed
+
+- Outputting a block outside HTML text is no longer a compile error; it uses
+  the text form.
+
 ## [0.4.0] - 2026-11-08
 
 Composition.

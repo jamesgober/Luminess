@@ -77,6 +77,14 @@ impl View for Gallery {
     fn fallback(&self, out: &mut Output<'_>) {
         let _ = write!(out, "{} images unavailable", self.images.len());
     }
+
+    fn text(&self, out: &mut String) -> Result<(), Failed> {
+        if self.broken {
+            return Err(Failed::new("image service down"));
+        }
+        let _ = write!(out, "{} images & more", self.images.len());
+        Ok(())
+    }
 }
 
 impl ToValue for Gallery {
@@ -416,7 +424,6 @@ fn unsafe_places_fail_at_compile_time() {
         ("<!-- x", "ends inside an HTML comment"),
         ("<iframe srcdoc=\"{{ page.title }}\">", "srcdoc"),
         ("<p title=\"{{ page.title | raw }}\">", "HTML text only"),
-        ("<p title=\"{{ page.gallery }}\">", "only go in HTML text"),
         (
             "<a {% if page.featured %}title=\"{% endif %}{{ page.title }}\">",
             "different places",
@@ -617,4 +624,50 @@ fn styles() {
         engine.render_to_string("attr", &bad).unwrap(),
         "<p style=\"color: blocked\">"
     );
+}
+
+#[test]
+fn block_fallback_text_and_text_forms() {
+    let mut p = page();
+    let engine = Engine::<Page>::builder()
+        .template("f", r#"{{ page.gallery | fallback("No pictures <now>") }}"#)
+        .template(
+            "attr",
+            r#"<div title="{{ page.gallery }}" data-n='{{ page.gallery | fallback("none") }}'>"#,
+        )
+        .template("js", "<script>var g = {{ page.gallery }};</script>")
+        .template(
+            "many",
+            "{% for x in page.posts %}{{ page.gallery }}{% endfor %}",
+        )
+        .build()
+        .unwrap();
+    assert_eq!(
+        engine.render_to_string("attr", &p).unwrap(),
+        r#"<div title="1 images &amp; more" data-n='1 images &amp; more'>"#
+    );
+    assert_eq!(
+        engine.render_to_string("js", &p).unwrap(),
+        r#"<script>var g = "1 images \u0026 more";</script>"#
+    );
+    p.gallery.broken = true;
+    assert_eq!(
+        engine.render_to_string("f", &p).unwrap(),
+        "No pictures &lt;now&gt;"
+    );
+    assert_eq!(
+        engine.render_to_string("attr", &p).unwrap(),
+        r#"<div title="" data-n='none'>"#
+    );
+    let mut out = Vec::new();
+    let r = engine.render("many", &p, &mut out).unwrap();
+    assert_eq!(r.fallbacks(), 2);
+    assert_eq!(r.failures().len(), 2);
+    assert!(
+        r.failures()
+            .iter()
+            .all(|f| f.reason() == "image service down")
+    );
+    assert!(compile_error(r#"{{ page.title | fallback("x") }}"#).contains("use `default`"));
+    assert!(compile_error("{{ page.gallery | fallback(1) }}").contains("takes one string"));
 }

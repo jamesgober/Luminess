@@ -30,7 +30,7 @@ A template engine for Rust that compiles once, at startup, against typed views.
 
 ```toml
 [dependencies]
-luminess = "0.4"
+luminess = "0.5"
 ```
 
 MSRV: Rust 1.85.
@@ -219,10 +219,15 @@ impl View for Stock {
 }
 ```
 
-When `render` fails, what it wrote is removed and `fallback` is written. In
-a template, `{% try %}...{% fallback %}...{% endtry %}` replaces a whole
-region instead. Either way the render succeeds and its `Rendered` result
-counts the fallbacks and keeps the first reason for the log.
+When `render` fails, what it wrote is removed and `fallback` is written.
+In a template, `{{ page.stock | fallback("Unavailable") }}` writes that text
+instead, and `{% try %}...{% fallback %}...{% endtry %}` replaces a whole
+region. Either way the render succeeds; `Rendered::fallbacks` counts the
+failures and `Rendered::failures` keeps their reasons (up to 16) for the log.
+
+A block can also sit where markup cannot go, such as an attribute, a URL, or a
+script, through its text form: implement `View::text`, and the engine
+escapes the text for the place.
 
 ## Live reload
 
