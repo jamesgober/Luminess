@@ -61,6 +61,11 @@ fn nasty() -> impl Strategy<Value = String> {
             Just("'".to_owned()),
             Just("javascript:".to_owned()),
             Just("</script>".to_owned()),
+            Just("${".to_owned()),
+            Just("\\".to_owned()),
+            Just("\u{2028}".to_owned()),
+            Just("`".to_owned()),
+            Just(";}".to_owned()),
             Just("{{".to_owned()),
             Just("%".to_owned()),
             Just(" ".to_owned()),
@@ -161,5 +166,117 @@ proptest! {
         if let Ok(t) = Engine::<Page>::builder().template("t", src).compile() {
             let _ = t.render_to_string("t", &Page { title: "<x>".into() });
         }
+    }
+}
+
+fn js_decode(s: &str) -> String {
+    let mut out = String::new();
+    let mut it = s.chars();
+    while let Some(c) = it.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match it.next().unwrap() {
+            'n' => out.push('\n'),
+            'r' => out.push('\r'),
+            't' => out.push('\t'),
+            'u' => {
+                let hex: String = it.by_ref().take(4).collect();
+                out.push(char::from_u32(u32::from_str_radix(&hex, 16).unwrap()).unwrap());
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+fn css_decode(s: &str) -> String {
+    let mut out = String::new();
+    let mut it = s.chars().peekable();
+    while let Some(c) = it.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        let mut hex = String::new();
+        while let Some(&h) = it.peek() {
+            if h == ' ' {
+                let _ = it.next();
+                break;
+            }
+            hex.push(h);
+            let _ = it.next();
+        }
+        out.push(char::from_u32(u32::from_str_radix(&hex, 16).unwrap()).unwrap());
+    }
+    out
+}
+
+struct Script {
+    v: String,
+}
+luminess::view!(Script as "s" { v: text });
+
+fn render_script(src: &str, v: &str) -> String {
+    let engine = Engine::<Script>::builder()
+        .template("t", src)
+        .build()
+        .unwrap();
+    engine
+        .render_to_string("t", &Script { v: v.to_owned() })
+        .unwrap()
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(2000))]
+
+    #[test]
+    fn js_strings_round_trip_and_cannot_close_anything(s in nasty()) {
+        let mut out = Vec::new();
+        escape::js_string(&s, &mut out);
+        let out = String::from_utf8(out).unwrap();
+        let closes = out.contains(['"', '\'', '`', '<', '>', '&', '\n', '\r', '\u{2028}', '\u{2029}']);
+        prop_assert!(!closes, "{out}");
+        let opens = out.contains("${");
+        prop_assert!(!opens, "{out}");
+        prop_assert_eq!(js_decode(&out), s);
+    }
+
+    #[test]
+    fn script_values_stay_literals(s in nasty()) {
+        // In code: one string literal, nothing after it but the template's own `;`.
+        let out = render_script("<script>var a = {{ s.v }};</script>", &s);
+        let inner = &out["<script>var a = ".len()..out.len() - ";</script>".len()];
+        prop_assert!(inner.starts_with('"') && inner.ends_with('"') && inner.len() >= 2);
+        prop_assert!(!inner[1..inner.len() - 1].contains('"'));
+        prop_assert_eq!(js_decode(&inner[1..inner.len() - 1]), s.clone());
+        // In an attribute: the same, with the quotes as entities.
+        let out = render_script("<b onclick=\"f({{ s.v }})\">", &s);
+        let inner = &out["<b onclick=\"f(".len()..out.len() - ")\">".len()];
+        prop_assert!(!inner.contains('"'));
+        prop_assert!(inner.starts_with("&quot;") && inner.ends_with("&quot;"));
+    }
+
+    #[test]
+    fn css_strings_round_trip(s in nasty()) {
+        let mut out = Vec::new();
+        escape::css(&s, &mut out);
+        let out = String::from_utf8(out).unwrap();
+        prop_assert!(out.chars().all(|c| c.is_ascii_alphanumeric() || c == '\\' || c == ' '));
+        prop_assert_eq!(css_decode(&out), s);
+    }
+
+    #[test]
+    fn css_values_are_checked(s in nasty()) {
+        let out = render_script("<style>a { color: {{ s.v }}; }</style>", &s);
+        let inner = &out["<style>a { color: ".len()..out.len() - "; }</style>".len()];
+        if escape::css_value_allowed(&s) {
+            prop_assert_eq!(inner, s.as_str());
+        } else {
+            prop_assert_eq!(inner, escape::BLOCKED_CSS);
+        }
+        let escapes = inner.contains([';', '}', '<', '(', '"', '\'', '\\', ':']);
+        prop_assert!(!escapes, "{inner}");
     }
 }

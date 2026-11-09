@@ -28,11 +28,12 @@ The rebuild. Nothing of 0.1's API remains.
 
 ## 0.3.0: scripts and styles
 
-- [ ] Output inside `<script>` and `on*` attributes: a JavaScript string literal in code, escaped content inside an existing string; string, comment, regular-expression, and template-literal tracking.
-- [ ] Output inside `<style>` and `style` attributes: CSS hex escaping; strings and comments tracked; `url(` refused unless checked.
-- [ ] JSON-in-script for numbers and bools; an explicit `| js` for a whole value.
-- [ ] A template that ends inside a `<script>`, `<style>`, comment, or tag is an error.
-- [ ] Property tests and a fuzz target for both escapers.
+- [x] Output inside `<script>` and `on*` attributes: a JavaScript literal in code, escaped content inside an existing string; string, comment, regular-expression, and template-literal tracking.
+- [x] Output inside `<style>` and `style` attributes: checked values in code (anything that could start a function, such as `url(`, is blocked), hex escaping in strings; strings and comments tracked.
+- [x] Numbers, bools, and absent values as JavaScript literals. (An explicit `| js` filter turned out unnecessary: the context already picks it.)
+- [x] Character references in `on*` and `style` attribute text stop output there (they change the script after decoding).
+- [x] A template that ends inside a `<script>`, `<style>`, comment, attribute, or tag is an error.
+- [x] Property tests and fuzzing for both escapers.
 
 ## 0.4.0: composition
 

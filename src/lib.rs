@@ -6,9 +6,10 @@
 //!   field, filter, or template is a [`CompileError`] with the template name,
 //!   line, and column, never an empty string in production.
 //! - **Escaped for where it goes.** The compiler tracks the HTML around every
-//!   `{{ }}` and picks the escaper: HTML text, attribute value, or URL. Output
-//!   where no escaper is safe (an unquoted attribute, a comment, a tag name)
-//!   is refused at compile time. Unescaped output needs an explicit `| raw`.
+//!   `{{ }}` and picks the escaper: HTML text, attribute value, URL,
+//!   JavaScript, or CSS. Output where no escaper is safe (an unquoted
+//!   attribute, a comment, a tag name, a regular expression) is refused at
+//!   compile time. Unescaped output needs an explicit `| raw`.
 //! - **No data conversion.** A render reads your values through the [`View`]
 //!   trait, by field ids the compiler resolved, and writes straight into your
 //!   `Vec<u8>`. No JSON, no maps, no copies of your data.
@@ -61,7 +62,8 @@
     clippy::too_many_lines,
     clippy::many_single_char_names,
     clippy::similar_names,
-    clippy::single_match_else
+    clippy::single_match_else,
+    clippy::match_same_arms
 )]
 
 mod compile;
@@ -73,6 +75,7 @@ mod lex;
 mod output;
 mod parse;
 mod render;
+mod script;
 #[doc(hidden)]
 pub mod view;
 

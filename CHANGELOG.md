@@ -6,6 +6,29 @@ All notable changes to `luminess` are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-08
+
+Scripts and styles.
+
+### Added
+
+- Output in JavaScript: in `<script>` elements and `on...` attributes. In
+  code a value becomes a complete literal (text as a double-quoted string,
+  numbers, `true`/`false`, absent as `null`); inside a string or template
+  literal its content is escaped. The compiler follows strings, template
+  literals with `${}`, comments, and regular expressions.
+- Output in CSS: in `<style>` elements and `style` attributes. A value in code
+  passes when it holds only letters, digits, spaces, and `# % . , - _`, and is
+  replaced with `blocked` otherwise; inside a CSS string it is hex-escaped.
+- `escape::js_string`, `escape::js_quoted`, `escape::css`,
+  `escape::css_value_allowed`, `escape::BLOCKED_CSS`.
+- Compile errors for output in a JavaScript comment or regular expression,
+  right after `$` in a template literal, in a CSS comment, and in an `on...`
+  or `style` attribute whose text uses character references.
+- A template that ends inside a tag, attribute value, comment, script, or
+  style is a compile error.
+- Property tests and fuzzing for the new escapers.
+
 ## [0.2.0] - 2026-11-08
 
 A rebuild. Nothing of the unpublished 0.1 API remains.

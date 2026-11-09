@@ -35,6 +35,12 @@ pub(crate) enum Esc {
     UrlQuery,
     /// `| raw`: as is.
     Raw,
+    /// JavaScript: a whole literal in code (`string: false`) or string
+    /// content; `attr` adds HTML escaping for an `on*` attribute.
+    Js { string: bool, attr: bool },
+    /// CSS: a checked value in code or escaped string content; `attr` adds
+    /// HTML escaping for a `style` attribute.
+    Css { string: bool, attr: bool },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -218,7 +224,15 @@ impl Compiler<'_> {
         self.nodes = 0;
         self.slots = 0;
         let before = self.diags.len();
-        let (nodes, _) = self.nodes(t, ast, Ctx::Text, &mut scope);
+        let (nodes, end) = self.nodes(t, ast, Ctx::Text, &mut scope);
+        if end != Ctx::Text && self.diags.len() == before {
+            let at = src.src.len();
+            self.error(
+                t,
+                at,
+                format!("the template ends inside {}; close it", end.describe()),
+            );
+        }
         if self.nodes > MAX_NODES {
             self.error(
                 t,
@@ -459,6 +473,8 @@ impl Compiler<'_> {
             Slot::Url(UrlPart::Start) => Esc::UrlStart,
             Slot::Url(UrlPart::Path) => Esc::UrlPath,
             Slot::Url(UrlPart::Query) => Esc::UrlQuery,
+            Slot::Js { string, attr } => Esc::Js { string, attr },
+            Slot::Css { string, attr } => Esc::Css { string, attr },
         };
         match ty {
             Ty::Object(s) if s.renders() => {

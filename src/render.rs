@@ -360,6 +360,50 @@ impl<'a> Run<'a, '_> {
     }
 
     fn write(&mut self, v: Val<'a>, esc: Esc) {
+        if let Esc::Js { string: false, .. } = esc {
+            // A whole JavaScript literal. Negative numbers get spaces so they
+            // cannot join an operator before them (`x-{{ n }}`).
+            match v {
+                Val::V(Value::Absent | Value::View(_) | Value::List(_)) => {
+                    self.out.extend_from_slice(b"null");
+                }
+                Val::V(Value::Bool(b)) => {
+                    self.out
+                        .extend_from_slice(if b { b"true" } else { b"false" });
+                }
+                Val::V(Value::Int(i)) => {
+                    if i < 0 {
+                        self.out.push(b' ');
+                        write_int(i, self.out);
+                        self.out.push(b' ');
+                    } else {
+                        write_int(i, self.out);
+                    }
+                }
+                Val::V(Value::Float(f)) => {
+                    if f.is_nan() {
+                        self.out.extend_from_slice(b"NaN");
+                    } else if f.is_infinite() {
+                        self.out.extend_from_slice(if f > 0.0 {
+                            b"Infinity"
+                        } else {
+                            b" -Infinity "
+                        });
+                    } else if f < 0.0 {
+                        self.out.push(b' ');
+                        write_float(f, self.out, &mut self.scratch);
+                        self.out.push(b' ');
+                    } else {
+                        write_float(f, self.out, &mut self.scratch);
+                    }
+                }
+                other => {
+                    let s = Self::text(&other).into_owned();
+                    self.text_out(&s, esc);
+                }
+            }
+            return;
+        }
         match v {
             Val::V(v) => match v {
                 Value::Absent | Value::View(_) | Value::List(_) => {}
@@ -401,6 +445,27 @@ impl<'a> Run<'a, '_> {
             Esc::UrlPath => escape::url(s, self.out),
             Esc::UrlQuery => escape::url_component(s, self.out),
             Esc::Raw => self.out.extend_from_slice(s.as_bytes()),
+            // JavaScript and CSS escaping leaves no byte HTML treats
+            // specially, except the quotes around a JavaScript literal, which
+            // an attribute value needs as `&quot;`.
+            Esc::Js { string: true, .. } => escape::js_string(s, self.out),
+            Esc::Js {
+                string: false,
+                attr,
+            } => {
+                let q: &[u8] = if attr { b"&quot;" } else { b"\"" };
+                self.out.extend_from_slice(q);
+                escape::js_string(s, self.out);
+                self.out.extend_from_slice(q);
+            }
+            Esc::Css { string: true, .. } => escape::css(s, self.out),
+            Esc::Css { string: false, .. } => {
+                if escape::css_value_allowed(s) {
+                    self.out.extend_from_slice(s.as_bytes());
+                } else {
+                    self.out.extend_from_slice(escape::BLOCKED_CSS.as_bytes());
+                }
+            }
         }
     }
 }

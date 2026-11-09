@@ -10,10 +10,11 @@ A template engine for Rust that compiles once, at startup, against typed views.
   types. `{{ page.titel }}` is a compile error with the template, line,
   column, and "did you mean `title`?", not an empty string in production.
 - **Escaped for where it goes.** The compiler follows the HTML around each
-  `{{ }}` and picks the escaper: HTML text, attribute value, or URL (with a
-  scheme check, so `javascript:` never reaches an `href`). Places where no
-  escaper is safe, such as an unquoted attribute or an HTML comment, are
-  refused at compile time.
+  `{{ }}` and picks the escaper: HTML text, attribute value, URL (with a
+  scheme check, so `javascript:` never reaches an `href`), JavaScript, or
+  CSS. Places where no escaper is safe, such as an unquoted attribute, an
+  HTML comment, or a JavaScript regular expression, are refused at compile
+  time.
 - **No data conversion.** No JSON, no maps, no serde. A render reads your
   values through a small trait by field ids the compiler resolved, and writes
   straight into your `Vec<u8>`.
@@ -29,7 +30,7 @@ A template engine for Rust that compiles once, at startup, against typed views.
 
 ```toml
 [dependencies]
-luminess = "0.2"
+luminess = "0.3"
 ```
 
 MSRV: Rust 1.85.
@@ -99,11 +100,23 @@ the empty list.
 | the start of a URL attribute (`href`, `src`, `action`, ...) | only `http`, `https`, `mailto`, `tel`, and relative URLs pass; anything else becomes `#blocked`; then percent-encoded |
 | later in a URL, before `?` | percent-encoded where a URL does not allow the byte |
 | after `?` or `#` in a URL | every reserved byte percent-encoded |
+| JavaScript code in `<script>` or an `on...` attribute | a complete literal: text as a double-quoted string, numbers, `true`/`false`, absent as `null` |
+| a JavaScript string or template literal | its content, with quotes, backslashes, `<`, `>`, `&`, `$`, braces, and line breaks escaped |
+| a CSS value in `<style>` or a `style` attribute | the value as is when it holds only letters, digits, spaces, and `# % . , - _` (colors, lengths, names); `blocked` otherwise |
+| a CSS string | every character other than letters and digits as a CSS hex escape |
+
+```text
+<script>var user = {{ page.user }};</script>      -> var user = "Ann O\u0027Neil";
+<button onclick="open({{ page.id }})">            -> open(42)
+<style>h1 { color: {{ page.color }}; }</style>    -> color: #ff0000;
+```
 
 Refused at compile time: output in an unquoted attribute value, a tag name, an
-attribute name, an HTML comment, an event-handler attribute (`onclick`), a
-`style` attribute, `srcdoc`, and inside `<script>` or `<style>` (script and
-style contexts arrive in 0.3). `| raw` is allowed in HTML text only, so
+attribute name, an HTML comment, `srcdoc`, a JavaScript comment or regular
+expression, a CSS comment, right after `$` in a template literal, and in an
+`on...` or `style` attribute whose text uses character references (`&quot;`).
+A template that ends inside a tag, an attribute, a comment, a script, or a
+style is an error too. `| raw` is allowed in HTML text only, so
 `grep '| raw'` finds every unescaped value in a theme.
 
 The escapers are public in `luminess::escape` for code that builds markup by
