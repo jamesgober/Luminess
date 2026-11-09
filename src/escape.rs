@@ -4,19 +4,6 @@
 //! Every function appends to a byte buffer and never fails. The output is
 //! valid UTF-8 whenever the input is.
 
-/// Bytes [`html`] replaces.
-const fn html_table() -> [u8; 256] {
-    let mut t = [0u8; 256];
-    t[b'&' as usize] = 1;
-    t[b'<' as usize] = 2;
-    t[b'>' as usize] = 3;
-    t[b'"' as usize] = 4;
-    t[b'\'' as usize] = 5;
-    t
-}
-static HTML: [u8; 256] = html_table();
-const HTML_REPL: [&[u8]; 6] = [b"", b"&amp;", b"&lt;", b"&gt;", b"&quot;", b"&#39;"];
-
 /// Escapes text for HTML text or a quoted attribute value: `&`, `<`, `>`, `"`,
 /// and `'` become entities. Everything else is copied.
 ///
@@ -27,49 +14,90 @@ const HTML_REPL: [&[u8]; 6] = [b"", b"&amp;", b"&lt;", b"&gt;", b"&quot;", b"&#3
 /// ```
 pub fn html(s: &str, out: &mut Vec<u8>) {
     let b = s.as_bytes();
+    let n = b.len();
     let mut start = 0;
     let mut i = 0;
-    while i < b.len() {
-        // Skip eight bytes at a time while none of them needs escaping.
-        if let Some(chunk) = b.get(i..i + 8) {
-            let mut w = [0u8; 8];
-            w.copy_from_slice(chunk);
-            if !has_html_special(u64::from_le_bytes(w)) {
-                i += 8;
-                continue;
-            }
+    // Eight bytes at a time; most text has nothing to escape. A chunk that
+    // does is escaped into a small buffer and copied out once.
+    while i + 8 <= n {
+        let mut w = [0u8; 8];
+        w.copy_from_slice(&b[i..i + 8]);
+        if has_html_special(u64::from_le_bytes(w)) {
+            out.extend_from_slice(&b[start..i]);
+            html_chunk(&w, out);
+            start = i + 8;
         }
-        let end = (i + 8).min(b.len());
-        for (k, &c) in b[i..end].iter().enumerate() {
-            let r = HTML[c as usize];
-            if r != 0 {
-                out.extend_from_slice(&b[start..i + k]);
-                out.extend_from_slice(HTML_REPL[r as usize]);
-                start = i + k + 1;
-            }
+        i += 8;
+    }
+    if i < n {
+        let tail = &b[i..];
+        if tail
+            .iter()
+            .any(|&c| matches!(c, b'&' | b'<' | b'>' | b'"' | 0x27))
+        {
+            out.extend_from_slice(&b[start..i]);
+            html_chunk(tail, out);
+            return;
         }
-        i = end;
     }
     out.extend_from_slice(&b[start..]);
+}
+
+/// Escapes up to eight bytes through a stack buffer.
+#[inline]
+fn html_chunk(chunk: &[u8], out: &mut Vec<u8>) {
+    let mut buf = [0u8; 48];
+    let mut len = 0;
+    for &c in chunk {
+        match c {
+            b'&' => {
+                buf[len..len + 5].copy_from_slice(b"&amp;");
+                len += 5;
+            }
+            b'<' => {
+                buf[len..len + 4].copy_from_slice(b"&lt;");
+                len += 4;
+            }
+            b'>' => {
+                buf[len..len + 4].copy_from_slice(b"&gt;");
+                len += 4;
+            }
+            b'"' => {
+                buf[len..len + 6].copy_from_slice(b"&quot;");
+                len += 6;
+            }
+            0x27 => {
+                buf[len..len + 5].copy_from_slice(b"&#39;");
+                len += 5;
+            }
+            _ => {
+                buf[len] = c;
+                len += 1;
+            }
+        }
+    }
+    out.extend_from_slice(&buf[..len]);
 }
 
 const ONES: u64 = 0x0101_0101_0101_0101;
 const HIGHS: u64 = 0x8080_8080_8080_8080;
 
-/// `true` when any byte of `w` is zero.
+/// The high bit of each byte of `w` that is zero (and possibly of bytes
+/// above one): nonzero exactly when some byte is zero.
 #[inline]
-const fn has_zero(w: u64) -> bool {
-    w.wrapping_sub(ONES) & !w & HIGHS != 0
+const fn zero_bytes(w: u64) -> u64 {
+    w.wrapping_sub(ONES) & !w & HIGHS
 }
 
 /// `true` when any byte of `w` is one of `& < > " '`.
 #[inline]
 const fn has_html_special(w: u64) -> bool {
-    has_zero(w ^ (ONES * 0x26))
-        || has_zero(w ^ (ONES * 0x3c))
-        || has_zero(w ^ (ONES * 0x3e))
-        || has_zero(w ^ (ONES * 0x22))
-        || has_zero(w ^ (ONES * 0x27))
+    (zero_bytes(w ^ (ONES * 0x26))
+        | zero_bytes(w ^ (ONES * 0x3c))
+        | zero_bytes(w ^ (ONES * 0x3e))
+        | zero_bytes(w ^ (ONES * 0x22))
+        | zero_bytes(w ^ (ONES * 0x27)))
+        != 0
 }
 
 /// What [`url`] writes in place of a URL whose scheme is not allowed.
@@ -198,23 +226,25 @@ fn percent(c: u8, out: &mut Vec<u8>) {
 /// ```
 pub fn url(s: &str, out: &mut Vec<u8>) {
     let b = s.as_bytes();
+    let mut start = 0;
     for (i, &c) in b.iter().enumerate() {
+        // `&` and `%` are in the kept set but need a look of their own.
+        if URL_KEEP[c as usize] && c != b'&' && c != b'%' {
+            continue;
+        }
+        out.extend_from_slice(&b[start..i]);
+        start = i + 1;
         if c == b'&' {
             out.extend_from_slice(b"&amp;");
         } else if c == b'%' {
             let valid = b.get(i + 1).is_some_and(u8::is_ascii_hexdigit)
                 && b.get(i + 2).is_some_and(u8::is_ascii_hexdigit);
-            if valid {
-                out.push(b'%');
-            } else {
-                out.extend_from_slice(b"%25");
-            }
-        } else if URL_KEEP[c as usize] {
-            out.push(c);
+            out.extend_from_slice(if valid { b"%" } else { b"%25" });
         } else {
             percent(c, out);
         }
     }
+    out.extend_from_slice(&b[start..]);
 }
 
 /// Writes `s` as one URL component (a query value, a path segment): every byte
@@ -226,13 +256,17 @@ pub fn url(s: &str, out: &mut Vec<u8>) {
 /// assert_eq!(out, b"a%26b%3Dc%20d%2F%C3%A9");
 /// ```
 pub fn url_component(s: &str, out: &mut Vec<u8>) {
-    for &c in s.as_bytes() {
+    let b = s.as_bytes();
+    let mut start = 0;
+    for (i, &c) in b.iter().enumerate() {
         if COMPONENT_KEEP[c as usize] {
-            out.push(c);
-        } else {
-            percent(c, out);
+            continue;
         }
+        out.extend_from_slice(&b[start..i]);
+        start = i + 1;
+        percent(c, out);
     }
+    out.extend_from_slice(&b[start..]);
 }
 
 /// Writes `s` as the content of a JavaScript string literal (single, double,

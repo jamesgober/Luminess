@@ -58,10 +58,11 @@ The rebuild. Nothing of 0.1's API remains.
 
 ## 0.7.0: performance
 
-- [ ] A render reads the current set without an atomic write (generation counter and a per-thread cache), measured under 16 threads.
-- [ ] Escapers that scan eight bytes at a time; literal runs merged; loop slots on the stack.
-- [ ] Pre-resolved template handles (`TemplateId`) so a server skips the name lookup.
-- [ ] A benchmark crate (`benches/compare`, its own workspace) against Tera, MiniJinja, and Askama on the same page.
+- [x] A render reads the current set without an atomic write (generation counter and a per-thread cache). Under 16 threads the engine's cost over a no-engine control fell from about 1.1-1.5 µs to 0.3-0.6 µs per render (A/B, three alternating runs, loaded machine).
+- [x] The HTML escaper scans eight bytes at a time (about 4 GB/s with nothing to escape, up from 1.6); URL escapers copy whole runs; literal runs are merged at compile time.
+- [x] Faster template-name lookup (a fast hash in place of SipHash). Pre-resolved `TemplateId` handles were dropped: after the faster hash the lookup is a few nanoseconds, and handles would have to survive reloads.
+- [x] `view!` answers fields through a jump table; plain field outputs skip the general evaluator.
+- [x] `benches/compare` (its own workspace) renders the same page with Tera, MiniJinja, and Askama. Loop slots stay on the heap: one small allocation per render with loops, below measurement noise.
 
 ## 0.8.0: diagnostics and hardening
 

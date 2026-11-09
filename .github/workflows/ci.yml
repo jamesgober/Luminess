@@ -58,6 +58,21 @@ jobs:
       - name: Render benchmark
         run: cargo bench --bench render
 
+  compare:
+    # The comparison crate is its own workspace with the other engines as
+    # its dependencies; they never reach luminess's own builds.
+    name: Comparison with other engines
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: benches/compare
+      - name: Run the comparison
+        working-directory: benches/compare
+        run: cargo run --release
+
   fuzz:
     name: Fuzz smoke (${{ matrix.target }})
     runs-on: ubuntu-latest

@@ -1,0 +1,22 @@
+[package]
+name = "luminess-compare"
+version = "0.0.0"
+publish = false
+edition = "2024"
+description = "The typical-page benchmark rendered by luminess, Tera, MiniJinja, and Askama"
+
+# Kept out of luminess's own dependency tree: the other engines are
+# dependencies of this crate only.
+[dependencies]
+luminess = { path = "../.." }
+tera = "2"
+minijinja = { version = "3", features = ["serde", "json", "speedups"] }
+askama = "0.16"
+serde = { version = "1", features = ["derive"] }
+
+# Keeps this crate out of any parent workspace.
+[workspace]
+members = ["."]
+
+[profile.release]
+debug = true

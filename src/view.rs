@@ -661,17 +661,19 @@ macro_rules! view {
         }
 
         impl $crate::View for $ty {
-            #[allow(unused_assignments, unused_mut, unused_variables)]
             fn field(&self, id: $crate::FieldId) -> $crate::Value<'_> {
-                let i = id.index();
-                let mut n = 0usize;
-                $(
-                    if i == n {
-                        return $crate::view!(@value self.$field, $kind);
-                    }
-                    n += 1;
-                )*
-                $crate::Value::Absent
+                // One constant per field, numbered by an enum in declaration
+                // order, so the match below is a jump table.
+                mod __ids {
+                    #![allow(non_upper_case_globals, non_camel_case_types, dead_code)]
+                    #[repr(usize)]
+                    enum Field { $($field),* }
+                    $(pub const $field: usize = Field::$field as usize;)*
+                }
+                match id.index() {
+                    $(__ids::$field => $crate::view!(@value self.$field, $kind),)*
+                    _ => $crate::Value::Absent,
+                }
             }
         }
 
