@@ -77,6 +77,9 @@ mod parse;
 mod render;
 mod script;
 mod view;
+#[cfg(feature = "web-net")]
+#[cfg_attr(docsrs, doc(cfg(feature = "web-net")))]
+pub mod web;
 
 #[doc(hidden)]
 pub use view::__html;

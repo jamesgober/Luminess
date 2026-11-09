@@ -365,6 +365,30 @@ do not contend.
 Measured on a shared Windows 11 desktop machine under load from other work;
 the fastest of seven runs.
 
+## With web-net
+
+The `web-net` feature makes an `Engine` a [web-net](https://crates.io/crates/web-net)
+template engine, reading your page views directly:
+
+```toml
+luminess = { version = "0.9", features = ["web-net"] }
+```
+
+```rust
+use luminess::{Engine, web::{ErrorView, Theme}};
+
+let pages = Engine::<Page>::builder().directory("themes/default", "html")?.build()?;
+let errors = Engine::<ErrorView>::builder().directory("themes/default/errors", "html")?.build()?;
+let app = web_net::App::builder(gate).render(Theme::new(pages).with_error_pages(errors));
+```
+
+Route templates are resolved when the app is built, so a missing template
+stops it from starting; the ids stay valid across `reload`. Error pages
+come from `error/<status>`, then `error`, then web-net's built-in page; they
+read `error.status`, `error.title`, `error.message`, and `error.reference`.
+Views must be `'static` (owned data or `Arc`). The default build of Luminess
+depends on nothing.
+
 ## Documentation
 
 - [Template syntax](docs/SYNTAX.md)
