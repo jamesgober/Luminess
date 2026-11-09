@@ -99,7 +99,7 @@ escaper at compile time. There is nothing to choose in the template.
 | a URL attribute (`href`, `src`, `action`, ...) | at the start: only `http`, `https`, `mailto`, `tel`, or relative URLs pass, others become `#blocked`; then percent-encoded |
 | JavaScript code (a `<script>` element or an `on...` attribute) | a complete literal: text as a quoted string, numbers, `true`/`false`, absent as `null` |
 | inside a JavaScript string or template literal | the content, with quotes, backslashes, `<`, `>`, `&`, `$`, braces, and line breaks escaped |
-| a CSS value (a `<style>` element or a `style` attribute) | the value as is when it is only letters, digits, spaces, and `# % . , - _`; `blocked` otherwise |
+| a CSS value (a `<style>` element or a `style` attribute) | the value as is when it is only letters, digits, spaces, `# % . , - _ + * /`, and the functions `rgb rgba hsl hsla calc min max clamp var`; `blocked` otherwise |
 | inside a CSS string | every character other than letters and digits as a CSS hex escape |
 
 These are compile errors: output in an unquoted attribute value, in a tag name,

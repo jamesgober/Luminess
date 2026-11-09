@@ -6,6 +6,24 @@ All notable changes to `luminess` are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-08
+
+API freeze for 1.x and the pre-1.0 polish pass.
+
+### Changed
+
+- CSS values may use the functions `rgb`, `rgba`, `hsl`, `hsla`, `calc`,
+  `min`, `max`, `clamp`, and `var` around plain text, and `+ * /` (sizes
+  worked out with `calc`). Any other function, `url(` included, and CSS
+  comment markers are still replaced with `blocked`.
+- The `view` module is private; everything public was already at the crate
+  root.
+
+### Added
+
+- `docs/SYNTAX.md`, `docs/API.md`, `docs/SECURITY.md` (what each escaper
+  guarantees, and the known limits), and `docs/PERFORMANCE.md`.
+
 ## [0.8.0] - 2026-11-08
 
 Diagnostics and limits.

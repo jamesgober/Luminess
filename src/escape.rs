@@ -383,23 +383,63 @@ pub fn css(s: &str, out: &mut Vec<u8>) {
 /// What a CSS value that [`css_value_allowed`] refuses is replaced with.
 pub const BLOCKED_CSS: &str = "blocked";
 
-/// `true` when `s` can be written as a CSS value as it is: only ASCII
-/// letters, digits, spaces, `#`, `%`, `.`, `,`, `-`, and `_`. That covers
-/// colors, lengths, keywords, and font names; anything else (a `(`, a `:`, a
-/// quote, a backslash) could start a function or end the declaration.
+/// `true` when `s` can be written as a CSS value as it is: ASCII letters,
+/// digits, spaces, and `# % . , - _ + * /`, plus the functions `rgb`,
+/// `rgba`, `hsl`, `hsla`, `calc`, `min`, `max`, `clamp`, and `var` around
+/// such text. That covers colors, lengths, keywords, font names, and sizes
+/// worked out with `calc`. Anything else (another function such as `url`, a
+/// `:`, `;`, quote, backslash, or brace) could load something or end the
+/// declaration.
 ///
 /// ```
 /// use luminess::escape::css_value_allowed;
 /// assert!(css_value_allowed("#ff0000"));
 /// assert!(css_value_allowed("1.5em"));
+/// assert!(css_value_allowed("rgb(10, 20, 30)"));
+/// assert!(css_value_allowed("calc(100% - 2 * var(--gap))"));
 /// assert!(!css_value_allowed("red; background: url(x)"));
+/// assert!(!css_value_allowed("url(x)"));
 /// assert!(!css_value_allowed("expression(alert(1))"));
+/// assert!(!css_value_allowed("rgb(1, 2, 3"));
+/// assert!(!css_value_allowed("1px /* x"));
 /// ```
 #[must_use]
 pub fn css_value_allowed(s: &str) -> bool {
-    s.bytes().all(|c| {
-        c.is_ascii_alphanumeric() || matches!(c, b' ' | b'#' | b'%' | b'.' | b',' | b'-' | b'_')
-    })
+    const FUNCTIONS: [&str; 9] = [
+        "rgb", "rgba", "hsl", "hsla", "calc", "min", "max", "clamp", "var",
+    ];
+    let b = s.as_bytes();
+    let mut depth = 0usize;
+    let mut word_start = None;
+    for (i, &c) in b.iter().enumerate() {
+        match c {
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_' => {
+                if word_start.is_none() {
+                    word_start = Some(i);
+                }
+                continue;
+            }
+            b'(' => {
+                // Only a listed function name may open parentheses.
+                let Some(w) = word_start else { return false };
+                if !FUNCTIONS.iter().any(|f| f.eq_ignore_ascii_case(&s[w..i])) || depth == 8 {
+                    return false;
+                }
+                depth += 1;
+            }
+            b')' => {
+                if depth == 0 {
+                    return false;
+                }
+                depth -= 1;
+            }
+            b' ' | b'#' | b'%' | b'.' | b',' | b'+' | b'*' | b'/' => {}
+            _ => return false,
+        }
+        word_start = None;
+    }
+    // `/*` or `*/` would open or close a comment around the template's own CSS.
+    depth == 0 && !s.contains("/*") && !s.contains("*/")
 }
 
 #[cfg(test)]

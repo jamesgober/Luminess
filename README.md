@@ -31,7 +31,7 @@ A template engine for Rust that compiles once, at startup, against typed views.
 
 ```toml
 [dependencies]
-luminess = "0.8"
+luminess = "0.9"
 ```
 
 MSRV: Rust 1.85.
@@ -163,7 +163,7 @@ view type.
 | after `?` or `#` in a URL | every reserved byte percent-encoded |
 | JavaScript code in `<script>` or an `on...` attribute | a complete literal: text as a double-quoted string, numbers, `true`/`false`, absent as `null` |
 | a JavaScript string or template literal | its content, with quotes, backslashes, `<`, `>`, `&`, `$`, braces, and line breaks escaped |
-| a CSS value in `<style>` or a `style` attribute | the value as is when it holds only letters, digits, spaces, and `# % . , - _` (colors, lengths, names); `blocked` otherwise |
+| a CSS value in `<style>` or a `style` attribute | the value as is when it holds only letters, digits, spaces, `# % . , - _ + * /`, and the functions `rgb rgba hsl hsla calc min max clamp var` (colors, lengths, names, sizes); `blocked` otherwise |
 | a CSS string | every character other than letters and digits as a CSS hex escape |
 
 ```text
@@ -332,7 +332,7 @@ A render that passes `max_output` stops, removes what it wrote, and fails with
 
 `cargo bench --bench render` renders a typical page: a head, a navigation
 include with 6 links, a 2 KiB trusted HTML body, 20 related posts with tags,
-and a footer, about 10.8 KiB of output and 150 values.
+a script block with three values, and a footer, about 10.9 KiB of output and 150 values.
 
 | Case | Time |
 |---|---|
@@ -364,6 +364,14 @@ do not contend.
 
 Measured on a shared Windows 11 desktop machine under load from other work;
 the fastest of seven runs.
+
+## Documentation
+
+- [Template syntax](docs/SYNTAX.md)
+- [API overview](docs/API.md)
+- [Security model](docs/SECURITY.md): what each escaper guarantees, and the known limits
+- [Performance](docs/PERFORMANCE.md)
+- API reference on [docs.rs](https://docs.rs/luminess)
 
 ## License
 

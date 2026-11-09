@@ -73,7 +73,15 @@ The rebuild. Nothing of 0.1's API remains.
 
 ## 0.9.0: freeze
 
-- [ ] API review against the simplicity rule; anything unclear is renamed or removed.
-- [ ] Every deferred item and accepted gap revisited; performance tuned again.
-- [ ] `docs/` complete: API, syntax, security model (what each escaper guarantees), performance.
-- [ ] Release candidate. 1.0 waits for its own decision.
+- [x] API review against the simplicity rule: everything public is at the crate root (the `view` module is private now); `FilterFn` stayed internal (`Builder::filter` takes a closure); `TemplateId` was not added.
+- [x] Every deferred item and accepted gap revisited. CSS values may now use `rgb rgba hsl hsla calc min max clamp var` (blocking `rgb(...)` was too strict for real themes); comment markers stay blocked. The rest are written down in `docs/SECURITY.md` as accepted limits: regular expressions after `)`, `meta refresh` URLs, `srcset` after the first candidate, template literals nested past 4.
+- [x] `docs/` complete: `SYNTAX.md`, `API.md`, `SECURITY.md`, `PERFORMANCE.md`.
+- [x] Release candidate for the 1.x API. 1.0 waits for its own decision.
+
+## Before 1.0 (James decides)
+
+- [ ] James reviews `dev/SYNTAX.md`; the syntax freezes (changes he asks for go in first).
+- [ ] The web-net integration works end to end: web-net's `Render` trait carries a typed view (proposal sent to the web-net session on 2026-11-08), and Luminess implements it behind an optional `web-net` feature.
+- [ ] 24-hour fuzz runs of `compile` and `escape` with no findings.
+- [ ] A benchmark run on a quiet machine, and the numbers in the README and `docs/PERFORMANCE.md` updated.
+- [ ] One real theme (a site's layouts, partials, and blocks) built on it, and any rough edges it finds fixed.

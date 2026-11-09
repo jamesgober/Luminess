@@ -76,8 +76,10 @@ mod output;
 mod parse;
 mod render;
 mod script;
+mod view;
+
 #[doc(hidden)]
-pub mod view;
+pub use view::__html;
 
 pub use engine::{Builder, Engine, Templates};
 pub use error::{CompileError, Diagnostic, RenderError, RenderErrorKind};
