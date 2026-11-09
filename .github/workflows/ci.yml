@@ -48,6 +48,32 @@ jobs:
         env:
           RUSTDOCFLAGS: "-D warnings"
 
+  web-net:
+    # The web-net feature accepts a range of web-net versions; test both ends.
+    name: web-net ${{ matrix.web_net }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        web_net: [oldest, newest]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: web-net-${{ matrix.web_net }}
+      - name: Pin web-net
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo generate-lockfile
+          if [ "${{ matrix.web_net }}" = oldest ]; then
+            cargo update -p web-net --precise 0.8.0
+          fi
+          cargo tree -i web-net --features web-net -e normal --depth 0
+      - name: Test with the web-net feature
+        run: cargo test --features web-net --locked
+
   bench:
     name: Benchmark (release)
     runs-on: ubuntu-latest

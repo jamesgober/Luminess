@@ -6,6 +6,13 @@ All notable changes to `luminess` are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-11-09
+
+### Changed
+
+- The `web-net` feature accepts web-net 0.8 and 0.9 (`>=0.8, <0.10`); the
+  `Render` trait is the same in both. CI tests the oldest and the newest.
+
 ## [0.9.1] - 2026-11-09
 
 ### Added

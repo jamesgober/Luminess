@@ -371,7 +371,7 @@ The `web-net` feature makes an `Engine` a [web-net](https://crates.io/crates/web
 template engine, reading your page views directly:
 
 ```toml
-luminess = { version = "0.9", features = ["web-net"] }
+luminess = { version = "0.9.2", features = ["web-net"] }  # web-net 0.8 or 0.9
 ```
 
 ```rust
