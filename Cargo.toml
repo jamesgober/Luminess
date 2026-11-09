@@ -3,7 +3,7 @@
 # =============================================================================
 [package]
 name    = "luminess"
-version = "0.9.0"
+version = "0.9.1"
 
 # Minimum Supported Rust Version (MSRV)
 rust-version = "1.85"
@@ -45,12 +45,16 @@ path = "src/lib.rs"
 # #################################
 [features]
 default = []
+# `luminess::web`: Engine and Theme implement web-net's Render trait.
+web-net = ["dep:web-net"]
 
 
 # DEPENDENCIES
 # #################################
 [dependencies]
-# None. Luminess has zero runtime dependencies.
+# None by default. The optional `web-net` feature adds the web framework
+# Luminess plugs into; the default build depends on nothing.
+web-net = { version = "0.8", optional = true, default-features = false }
 
 
 # DEV DEPENDENCIES

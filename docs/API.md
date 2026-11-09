@@ -57,6 +57,14 @@ nothing mutable.
 | `Output` | where a block writes: `text` (escaped), `markup` (trusted), `url`, `int`, and `fmt::Write` |
 | `Failed` | why a block could not render |
 
+## web-net (feature `web-net`)
+
+| Item | Purpose |
+|---|---|
+| `impl web_net::Render for Engine<V>` | the engine as web-net's template engine; `type View<'a> = V` |
+| `web::Theme::new(pages).with_error_pages(errors)` | pages plus error pages |
+| `web::ErrorView` | what an error page reads: `status`, `title`, `message`, `reference` |
+
 ## Escapers
 
 `escape::html`, `escape::url`, `escape::url_component`, `escape::url_allowed`,

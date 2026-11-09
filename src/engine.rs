@@ -9,7 +9,7 @@ use std::{
     marker::PhantomData,
     path::Path,
     sync::{
-        Arc, PoisonError, RwLock,
+        Arc, Mutex, PoisonError, RwLock,
         atomic::{AtomicU64, Ordering},
     },
 };
@@ -235,10 +235,11 @@ impl<V: View> Builder<V> {
             Self::compile_parts(&self.schema, self.sources, &sigs, self.max_template)?;
         Ok(Templates {
             set: Arc::new(Set {
-                names,
-                programs,
-                filters: fns.into_boxed_slice(),
+                names: Arc::new(names),
+                programs: programs.into(),
+                filters: fns.into(),
                 max_output: self.max_output,
+                ids: Box::new([]),
             }),
             _view: PhantomData,
         })
@@ -333,10 +334,31 @@ impl Hasher for NameHasher {
 type Names = HashMap<Box<str>, usize, BuildHasherDefault<NameHasher>>;
 
 struct Set {
-    names: Names,
-    programs: Vec<Program>,
-    filters: Box<[Arc<dyn FilterFn>]>,
+    names: Arc<Names>,
+    programs: Arc<[Program]>,
+    filters: Arc<[Arc<dyn FilterFn>]>,
     max_output: usize,
+    /// For each name registered with the engine (`Engine::register`), its
+    /// program in this set, if the set has it. Read only by the `web-net`
+    /// integration.
+    #[cfg_attr(not(feature = "web-net"), allow(dead_code))]
+    ids: Box<[Option<usize>]>,
+}
+
+impl Set {
+    /// This set with ids for `registry`. Cheap: the programs are shared.
+    fn with_ids(&self, registry: &[Box<str>]) -> Self {
+        Self {
+            names: Arc::clone(&self.names),
+            programs: Arc::clone(&self.programs),
+            filters: Arc::clone(&self.filters),
+            max_output: self.max_output,
+            ids: registry
+                .iter()
+                .map(|n| self.names.get(n).copied())
+                .collect(),
+        }
+    }
 }
 
 /// The default for [`Builder::max_template_size`].
@@ -450,6 +472,9 @@ struct Shared {
     /// Incremented after every swap.
     generation: AtomicU64,
     current: RwLock<Arc<Set>>,
+    /// Template names registered for id-based rendering, in id order. Only
+    /// grows; touched at startup and on swaps, never by a render.
+    registry: Mutex<Vec<Box<str>>>,
 }
 
 static NEXT_ENGINE: AtomicU64 = AtomicU64::new(1);
@@ -551,6 +576,7 @@ impl<V: View> Engine<V> {
             id: NEXT_ENGINE.fetch_add(1, Ordering::Relaxed),
             generation: AtomicU64::new(0),
             current: RwLock::new(templates.set),
+            registry: Mutex::new(Vec::new()),
         };
         Self {
             shared: Arc::new(shared),
@@ -570,12 +596,22 @@ impl<V: View> Engine<V> {
     /// Replaces the template set and returns the old one.
     pub fn swap(&self, templates: Templates<V>) -> Templates<V> {
         let old = {
+            let registry = self
+                .shared
+                .registry
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let set = if registry.is_empty() {
+                templates.set
+            } else {
+                Arc::new(templates.set.with_ids(&registry))
+            };
             let mut cur = self
                 .shared
                 .current
                 .write()
                 .unwrap_or_else(PoisonError::into_inner);
-            std::mem::replace(&mut *cur, templates.set)
+            std::mem::replace(&mut *cur, set)
         };
         // After the new set is in place: a render that sees the new
         // generation is sure to read the new set.
@@ -622,6 +658,74 @@ impl<V: View> Engine<V> {
 /// writes through `Output`, whose methods take `&str`.
 fn into_string(out: Vec<u8>) -> String {
     String::from_utf8(out).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
+}
+
+impl<V: View> Engine<V> {
+    /// Registers `name` for rendering by id, and returns its id: the same
+    /// for the life of the engine, across reloads. `None` when the current
+    /// set has no such template. Meant for startup; each new name copies the
+    /// set's id table once.
+    #[cfg(feature = "web-net")]
+    pub(crate) fn register(&self, name: &str) -> Option<u32> {
+        let mut registry = self
+            .shared
+            .registry
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(i) = registry.iter().position(|n| &**n == name) {
+            return u32::try_from(i).ok();
+        }
+        let mut cur = self
+            .shared
+            .current
+            .write()
+            .unwrap_or_else(PoisonError::into_inner);
+        if !cur.names.contains_key(name) {
+            return None;
+        }
+        let id = u32::try_from(registry.len()).ok()?;
+        registry.push(name.into());
+        *cur = Arc::new(cur.with_ids(&registry));
+        drop(cur);
+        let _ = self.shared.generation.fetch_add(1, Ordering::Release);
+        Some(id)
+    }
+
+    /// Renders the template registered as `id`. The name is returned for
+    /// error messages.
+    #[cfg(feature = "web-net")]
+    pub(crate) fn render_id(
+        &self,
+        id: u32,
+        view: &V,
+        out: &mut Vec<u8>,
+    ) -> Result<Rendered, RenderError> {
+        self.with_set(|set| {
+            let program = usize::try_from(id)
+                .ok()
+                .and_then(|i| set.ids.get(i).copied().flatten());
+            match program {
+                Some(p) => render::run(&set.programs[p], &set.filters, view, out, set.max_output)
+                    .ok_or_else(|| {
+                        RenderError::too_large(&self.registered_name(id), set.max_output)
+                    }),
+                None => Err(RenderError::not_found(&self.registered_name(id))),
+            }
+        })
+    }
+
+    #[cfg(feature = "web-net")]
+    fn registered_name(&self, id: u32) -> String {
+        let registry = self
+            .shared
+            .registry
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        usize::try_from(id)
+            .ok()
+            .and_then(|i| registry.get(i))
+            .map_or_else(|| format!("#{id}"), ToString::to_string)
+    }
 }
 
 impl Set {

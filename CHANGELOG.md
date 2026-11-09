@@ -6,6 +6,17 @@ All notable changes to `luminess` are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-11-09
+
+### Added
+
+- The `web-net` feature (off by default; the default build still depends on
+  nothing): `Engine<V>` implements `web_net::Render` with the application's
+  own view type, and `luminess::web::Theme` adds error pages from an
+  `Engine<ErrorView>` (`error/<status>`, then `error`). Template ids
+  resolved at startup stay valid across reloads, and rendering by id reads
+  one array entry with no shared write.
+
 ## [0.9.0] - 2026-11-08
 
 API freeze for 1.x and the pre-1.0 polish pass.
