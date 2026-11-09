@@ -1,1 +1,216 @@
 # Luminess
+
+A template engine for Rust that compiles once, at startup, against typed views.
+
+[![crates.io](https://img.shields.io/crates/v/luminess.svg)](https://crates.io/crates/luminess)
+[![docs.rs](https://docs.rs/luminess/badge.svg)](https://docs.rs/luminess)
+[![CI](https://github.com/jamesgober/Luminess/actions/workflows/ci.yml/badge.svg)](https://github.com/jamesgober/Luminess/actions/workflows/ci.yml)
+
+- **Mistakes fail at startup.** Templates compile against a schema of your
+  types. `{{ page.titel }}` is a compile error with the template, line,
+  column, and "did you mean `title`?", not an empty string in production.
+- **Escaped for where it goes.** The compiler follows the HTML around each
+  `{{ }}` and picks the escaper: HTML text, attribute value, or URL (with a
+  scheme check, so `javascript:` never reaches an `href`). Places where no
+  escaper is safe, such as an unquoted attribute or an HTML comment, are
+  refused at compile time.
+- **No data conversion.** No JSON, no maps, no serde. A render reads your
+  values through a small trait by field ids the compiler resolved, and writes
+  straight into your `Vec<u8>`.
+- **Blocks render themselves, and fail alone.** A value can write its own
+  markup (a gallery, a price table). If it fails, its output is removed, its
+  fallback is written, and the rest of the page renders.
+- **Live reload.** Swap in a new theme while serving. A theme with errors is
+  refused and the running one stays.
+- **Fast.** A typical 10 KiB page renders in about 9 µs.
+- **Zero dependencies.**
+
+## Install
+
+```toml
+[dependencies]
+luminess = "0.2"
+```
+
+MSRV: Rust 1.85.
+
+## Quick start
+
+```rust
+use luminess::Engine;
+
+struct Post { title: String, url: String }
+struct Page { title: String, posts: Vec<Post> }
+
+// Declare what templates may read. Field names are the struct's own.
+luminess::view!(Post as "post" { title: text, url: text });
+luminess::view!(Page as "page" { title: text, posts: list(object(Post)) });
+
+let engine = Engine::<Page>::builder()
+    .template("home", r#"<h1>{{ page.title }}</h1>
+<ul>
+{%- for post in page.posts %}
+  <li><a href="{{ post.url }}">{{ post.title }}</a></li>
+{%- endfor %}
+</ul>"#)
+    .build()?; // every template error, all at once
+
+let page = Page {
+    title: "News & notes".into(),
+    posts: vec![Post { title: "First".into(), url: "/first".into() }],
+};
+
+let mut out = Vec::new();
+engine.render("home", &page, &mut out)?;
+```
+
+## Templates
+
+The syntax follows Jinja and Twig.
+
+```text
+{{ page.title }}                       output, escaped for where it sits
+{{ page.body }}                        an html field is trusted markup, written as is in HTML text
+{{ page.note | raw }}                  explicit unescaped output
+{{ page.subtitle | default("None") }}  filters
+{% if page.featured %}...{% elif page.draft %}...{% else %}...{% endif %}
+{% for post in page.posts %}{{ loop.index }}. {{ post.title }}{% else %}No posts.{% endfor %}
+{% include "partials/nav" %}
+{% try %}{{ page.stock }}{% fallback %}Stock unknown{% endtry %}
+{# a comment #}   {% raw %}{{ not parsed }}{% endraw %}   {{- trims whitespace -}}
+```
+
+Conditions take `not`, `and`, `or`, `==`, `!=`, `<`, `<=`, `>`, `>=`,
+parentheses, and literals (strings, integers, decimals, `true`, `false`). In a
+loop, `loop.index`, `loop.index0`, `loop.revindex`, `loop.first`, `loop.last`,
+and `loop.length` are available.
+
+Filters: `default(v)`, `upper`, `lower`, `trim`, `length`, `raw`.
+
+False in a condition: `false`, an absent value, zero, the empty string, and
+the empty list.
+
+## Escaping
+
+| Where the `{{ }}` sits | What is written |
+|---|---|
+| HTML text | `& < > " '` as entities; `html` fields as is |
+| a quoted attribute value, `<title>`, `<textarea>` | `& < > " '` as entities, `html` fields too |
+| the start of a URL attribute (`href`, `src`, `action`, ...) | only `http`, `https`, `mailto`, `tel`, and relative URLs pass; anything else becomes `#blocked`; then percent-encoded |
+| later in a URL, before `?` | percent-encoded where a URL does not allow the byte |
+| after `?` or `#` in a URL | every reserved byte percent-encoded |
+
+Refused at compile time: output in an unquoted attribute value, a tag name, an
+attribute name, an HTML comment, an event-handler attribute (`onclick`), a
+`style` attribute, `srcdoc`, and inside `<script>` or `<style>` (script and
+style contexts arrive in 0.3). `| raw` is allowed in HTML text only, so
+`grep '| raw'` finds every unescaped value in a theme.
+
+The escapers are public in `luminess::escape` for code that builds markup by
+hand.
+
+## Views
+
+`view!` covers plain structs. Implement `View` by hand for anything else:
+the schema gives every field an id (its position), and `field` answers by id.
+
+```rust
+use luminess::{Engine, FieldId, Schema, Value, View};
+
+struct Product { name: String, price_cents: i64 }
+
+impl View for Product {
+    fn field(&self, id: FieldId) -> Value<'_> {
+        match id.index() {
+            0 => Value::Text(&self.name),
+            1 => Value::Int(self.price_cents),
+            _ => Value::Absent,
+        }
+    }
+}
+
+// A schema can be built at startup, from configuration or a plugin.
+let schema = Schema::build("product").text("name").int("price_cents").finish();
+let engine = Engine::<Product>::builder_with(schema)
+    .template("card", "<b>{{ product.name }}</b> {{ product.price_cents }}")
+    .build()?;
+```
+
+Values are `Text`, `Html` (trusted markup), `Int`, `Float`, `Bool`, `Display`
+(anything formattable, escaped like text), `View` (an object), `List`, and
+`Absent`.
+
+## Blocks and fallbacks
+
+A schema marked `renders()` belongs to a value that writes its own markup
+when a template outputs it directly:
+
+```rust
+use luminess::{Failed, FieldId, Output, Value, View};
+
+struct Stock { level: Result<u32, String> }
+
+impl View for Stock {
+    fn field(&self, _: FieldId) -> Value<'_> { Value::Absent }
+
+    fn render(&self, out: &mut Output<'_>) -> Result<(), Failed> {
+        let n = self.level.as_ref().map_err(|e| Failed::new(e.clone()))?;
+        out.markup("<span class=\"stock\">");
+        out.int(i64::from(*n));
+        out.markup(" left</span>");
+        Ok(())
+    }
+
+    fn fallback(&self, out: &mut Output<'_>) {
+        out.text("Stock unavailable");
+    }
+}
+```
+
+When `render` fails, what it wrote is removed and `fallback` is written. In
+a template, `{% try %}...{% fallback %}...{% endtry %}` replaces a whole
+region instead. Either way the render succeeds and its `Rendered` result
+counts the fallbacks and keeps the first reason for the log.
+
+## Live reload
+
+```rust
+// A theme changed on disk: compile the new set and swap it in.
+match engine.reload(Engine::<Page>::builder().template("home", new_source)) {
+    Ok(()) => {}                       // renders from now on use the new set
+    Err(errors) => eprintln!("{errors}"), // the running set stays
+}
+```
+
+`Engine` is cheap to clone and safe to share across threads. A render in
+flight finishes on the set it started with.
+
+## Errors
+
+```text
+3 template errors
+  home:1:13: `page` (page) has no field `titel`, did you mean `title`?
+  home:4:20: output in an unquoted attribute value; put the value in double quotes
+  nav:2:4: unknown filter `uper`, did you mean `upper`?; the filters are default, upper, lower, trim, length, raw
+```
+
+`CompileError::diagnostics` gives each one with its template, line, and
+column.
+
+## Performance
+
+`cargo bench --bench render` renders a typical page: a head, a navigation
+include with 6 links, a 2 KiB trusted HTML body, 20 related posts with tags,
+and a footer, about 10.8 KiB of output and 150 values.
+
+| Case | Time |
+|---|---|
+| typical page | about 9 µs |
+| one value | about 80 ns |
+| compiling the page and its include | about 35 µs |
+
+Measured on a shared Windows 11 desktop machine; the fastest of seven runs.
+
+## License
+
+Apache-2.0. See [LICENSE](LICENSE).
