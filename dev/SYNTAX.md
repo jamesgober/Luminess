@@ -1,6 +1,7 @@
 # Luminess template syntax (proposal)
 
-Status: draft for review. The syntax may change until 0.5.0, when it freezes.
+Status: complete proposal, implemented in 0.5.0. It freezes once James has
+reviewed it; until then, changes he asks for are taken with a migration note.
 
 The syntax follows Jinja and Twig, so anyone who has written a Jinja, Twig,
 Liquid, or Django template can read a Luminess template on sight. Where
