@@ -81,6 +81,7 @@ pub(crate) enum Step {
 }
 
 /// An application filter's signature, checked at compile time.
+#[derive(Clone)]
 pub(crate) struct FilterSig {
     pub name: Box<str>,
     pub params: Box<[Kind]>,
@@ -255,8 +256,6 @@ struct Compiler<'s> {
     filters: &'s [FilterSig],
     index: &'s HashMap<&'s str, usize>,
     diags: Vec<Diag>,
-    /// Above zero while probing a loop body: diagnostics are dropped.
-    quiet: usize,
     /// Includes being compiled: (template, offset of the include tag).
     stack: Vec<(usize, usize)>,
     nodes: usize,
@@ -339,9 +338,6 @@ fn accepts(kind: &Kind, ty: &Ty) -> bool {
 
 impl<'s> Compiler<'s> {
     fn error(&mut self, t: usize, at: usize, msg: impl Into<String>) {
-        if self.quiet > 0 {
-            return;
-        }
         let from = self.stack.last().copied();
         self.diags.push(Diag {
             template: t,
@@ -612,16 +608,21 @@ impl<'s> Compiler<'s> {
                         is_loop: true,
                     });
                     self.slots = self.slots.max(scope.next_slot());
-                    // A second pass of the body starts where the first ended,
-                    // so probe the body first and compile it from the join.
+                    // A second pass of the body starts where the first ended.
+                    // Compile it from the start; only when it ends somewhere
+                    // else, compile it again from the join of the two. Both
+                    // passes count toward the node budget, so nested loops
+                    // cannot make compiling take exponential time.
                     let start = ctx;
-                    self.quiet += 1;
-                    let mark = self.nodes;
-                    let (_, probe_end) = self.nodes(t, body, start, scope);
-                    self.nodes = mark;
-                    self.quiet -= 1;
-                    let entry = match start.join(probe_end) {
-                        Some(j) => j,
+                    let diags = self.diags.len();
+                    let (first, first_end) = self.nodes(t, body, start, scope);
+                    let (entry, cbody, end) = match start.join(first_end) {
+                        Some(j) if j == start => (start, first, first_end),
+                        Some(j) => {
+                            self.diags.truncate(diags);
+                            let (again, end) = self.nodes(t, body, j, scope);
+                            (j, again, end)
+                        }
                         None => {
                             self.error(
                                 t,
@@ -629,13 +630,12 @@ impl<'s> Compiler<'s> {
                                 format!(
                                     "the body of this `for` starts in {} but ends in {}",
                                     start.describe(),
-                                    probe_end.describe()
+                                    first_end.describe()
                                 ),
                             );
-                            start
+                            (start, first, first_end)
                         }
                     };
-                    let (cbody, end) = self.nodes(t, body, entry, scope);
                     let _ = scope.vars.pop();
                     let (cother, other_end) = match otherwise {
                         Some(b) => self.nodes(t, b, start, scope),
@@ -1502,7 +1502,6 @@ pub(crate) fn compile_all(
         filters,
         index: &index,
         diags,
-        quiet: 0,
         stack: Vec::new(),
         nodes: 0,
         slots: 0,
