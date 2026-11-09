@@ -162,6 +162,84 @@ fn main() {
         let _ = black_box(small.render("t", black_box(&p), &mut out));
     });
 
+    let text = "A short excerpt of the post that runs for a sentence or two, with an apostrophe's worth of escaping. ".repeat(40);
+    let mut esc = Vec::with_capacity(8192);
+    let t = time("escape 4 KiB of text for HTML", 100_000, || {
+        esc.clear();
+        luminess::escape::html(black_box(&text), &mut esc);
+    });
+    println!(
+        "{:<40} {:>10.2} GB/s",
+        "  throughput",
+        text.len() as f64 / t / 1e9
+    );
+    let short = "Post number 3: notes on <templates> & speed";
+    time("escape a 43-byte title with 3 specials", 2_000_000, || {
+        esc.clear();
+        luminess::escape::html(black_box(short), &mut esc);
+    });
+    let clean =
+        "plain words without anything to escape at all, just letters and spaces here ".repeat(50);
+    let t = time("scan 4 KiB with nothing to escape", 100_000, || {
+        esc.clear();
+        luminess::escape::html(black_box(&clean), &mut esc);
+    });
+    println!(
+        "{:<40} {:>10.2} GB/s",
+        "  throughput",
+        clean.len() as f64 / t / 1e9
+    );
+
+    for threads in [1usize, 16] {
+        let iters = 200_000u32;
+        let start = Instant::now();
+        std::thread::scope(|sc| {
+            for _ in 0..threads {
+                let small = small.clone();
+                let p = &p;
+                sc.spawn(move || {
+                    let mut out = Vec::with_capacity(256);
+                    for _ in 0..iters {
+                        out.clear();
+                        let _ = black_box(small.render("t", black_box(p), &mut out));
+                    }
+                });
+            }
+        });
+        let per = start.elapsed().as_secs_f64() / f64::from(iters);
+        println!(
+            "{:<40} {:>10.2} µs",
+            format!("render one value, {threads} threads (each)"),
+            per * 1e6
+        );
+        // The same amount of work with no engine: how much of the slowdown
+        // is the machine itself (cores busy with other work).
+        let start = Instant::now();
+        std::thread::scope(|sc| {
+            for _ in 0..threads {
+                sc.spawn(move || {
+                    let mut out = Vec::with_capacity(256);
+                    for _ in 0..iters {
+                        out.clear();
+                        out.extend_from_slice(b"<h1>");
+                        luminess::escape::html(
+                            black_box("How we render pages in microseconds"),
+                            &mut out,
+                        );
+                        out.extend_from_slice(b"</h1>");
+                        let _ = black_box(&out);
+                    }
+                });
+            }
+        });
+        let per = start.elapsed().as_secs_f64() / f64::from(iters);
+        println!(
+            "{:<40} {:>10.2} µs",
+            format!("  control without engine, {threads} threads"),
+            per * 1e6
+        );
+    }
+
     time("compile the page and its include", 2_000, || {
         let e = Engine::<Page>::builder()
             .template("page", LAYOUT)

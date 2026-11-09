@@ -28,15 +28,48 @@ const HTML_REPL: [&[u8]; 6] = [b"", b"&amp;", b"&lt;", b"&gt;", b"&quot;", b"&#3
 pub fn html(s: &str, out: &mut Vec<u8>) {
     let b = s.as_bytes();
     let mut start = 0;
-    for (i, &c) in b.iter().enumerate() {
-        let r = HTML[c as usize];
-        if r != 0 {
-            out.extend_from_slice(&b[start..i]);
-            out.extend_from_slice(HTML_REPL[r as usize]);
-            start = i + 1;
+    let mut i = 0;
+    while i < b.len() {
+        // Skip eight bytes at a time while none of them needs escaping.
+        if let Some(chunk) = b.get(i..i + 8) {
+            let mut w = [0u8; 8];
+            w.copy_from_slice(chunk);
+            if !has_html_special(u64::from_le_bytes(w)) {
+                i += 8;
+                continue;
+            }
         }
+        let end = (i + 8).min(b.len());
+        for (k, &c) in b[i..end].iter().enumerate() {
+            let r = HTML[c as usize];
+            if r != 0 {
+                out.extend_from_slice(&b[start..i + k]);
+                out.extend_from_slice(HTML_REPL[r as usize]);
+                start = i + k + 1;
+            }
+        }
+        i = end;
     }
     out.extend_from_slice(&b[start..]);
+}
+
+const ONES: u64 = 0x0101_0101_0101_0101;
+const HIGHS: u64 = 0x8080_8080_8080_8080;
+
+/// `true` when any byte of `w` is zero.
+#[inline]
+const fn has_zero(w: u64) -> bool {
+    w.wrapping_sub(ONES) & !w & HIGHS != 0
+}
+
+/// `true` when any byte of `w` is one of `& < > " '`.
+#[inline]
+const fn has_html_special(w: u64) -> bool {
+    has_zero(w ^ (ONES * 0x26))
+        || has_zero(w ^ (ONES * 0x3c))
+        || has_zero(w ^ (ONES * 0x3e))
+        || has_zero(w ^ (ONES * 0x22))
+        || has_zero(w ^ (ONES * 0x27))
 }
 
 /// What [`url`] writes in place of a URL whose scheme is not allowed.
