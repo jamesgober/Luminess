@@ -78,10 +78,20 @@ in double or single quotes, integers, decimals, `true`, `false`).
 {% endfor %}
 ```
 
-`loop.index` (from 1), `loop.index0` (from 0), `loop.first`, `loop.last`, and
-`loop.length` are available in the body. The `else` branch runs when the list
-is empty. Nested loops each have their own `loop`; the outer one is reached
-through its variable only.
+Inside the body, `loop` has these fields (for a list of `n` items):
+
+| Field | Value |
+|---|---|
+| `loop.index` | the position counted from 1: `1` for the first item, `n` for the last |
+| `loop.index0` | the position counted from 0: `0` to `n - 1` |
+| `loop.revindex` | the position counted back from the end, from `n` down to 1 |
+| `loop.first` | `true` for the first item |
+| `loop.last` | `true` for the last item |
+| `loop.length` | `n` |
+
+The `else` branch runs when the list is empty or absent. `loop` belongs to the
+innermost loop; an outer loop's item is reached through its own variable.
+`loop` outside a `for` is a compile error.
 
 ## 6. Escaping
 
@@ -154,8 +164,20 @@ A block that renders itself (a gallery, a product's stock) can fail at run time,
 for example when the service behind it is down. The rest of the page still
 renders:
 
-- Without `try`, the failed block's output is removed and the block's own
-  fallback is written (empty unless the block defines one). The failure is
-  reported to the caller.
-- With `{% try %} ... {% fallback %} ... {% endtry %}`, everything written
-  since `try` is removed and the fallback branch is rendered instead.
+What counts as a failure: only a block that renders itself reporting that it
+failed (its `render` or `text` returns an error). Missing optional data is
+not a failure: an absent field writes nothing, is false in a condition, and
+takes `| default(...)`. Mistakes in the template, such as unknown names or
+wrong kinds, never reach a render: they are compile errors at startup.
+
+- `{{ page.stock }}` alone: what the block wrote before failing is removed,
+  and its own fallback is written (empty unless it defines one).
+- `{{ page.stock | fallback("Unavailable") }}`: the same, with this text
+  (escaped) in place of the block's own fallback.
+- `{% try %} ... {% fallback %} ... {% endtry %}`: if any block inside the
+  `try` part fails, everything the `try` part wrote is removed, including
+  literal text and values written before the failure, and the `fallback` part
+  is rendered instead. Without failures, the `fallback` part is skipped.
+
+In every case the page still renders, and the failures (count and reasons)
+are reported to the caller in `Rendered`.

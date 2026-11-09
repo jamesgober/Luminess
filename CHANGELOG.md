@@ -19,6 +19,8 @@ API freeze for 1.x and the pre-1.0 polish pass.
 - The `view` module is private; everything public was already at the crate
   root.
 
+- The template syntax is frozen: later changes come with a migration note.
+
 ### Added
 
 - `docs/SYNTAX.md`, `docs/API.md`, `docs/SECURITY.md` (what each escaper

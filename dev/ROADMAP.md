@@ -47,7 +47,7 @@ The rebuild. Nothing of 0.1's API remains.
 - [x] Block fallbacks declared in the template: `{{ page.stock | fallback("Unavailable") }}`.
 - [x] `Rendered::failures` lists every failure (up to `Rendered::MAX_FAILURES`), not only the first.
 - [x] A block can go in an attribute, URL, script, or style through its text form (`View::text`), escaped for the place.
-- [ ] The syntax in `dev/SYNTAX.md` is reviewed and frozen; changes after this are additions only. (Implemented in full; the freeze waits for James's review.)
+- [x] The syntax in `dev/SYNTAX.md` is frozen (done in 0.9.0, after 0.5.0 had shipped; changes from James's review land in a 0.x release with a migration note).
 
 ## 0.6.0: methods and filters
 
@@ -80,7 +80,7 @@ The rebuild. Nothing of 0.1's API remains.
 
 ## Before 1.0 (James decides)
 
-- [ ] James reviews `dev/SYNTAX.md`; the syntax freezes (changes he asks for go in first).
+- [ ] James reviews `dev/SYNTAX.md` (frozen in 0.9.0); any changes he asks for land first, with a migration note.
 - [ ] The web-net integration works end to end: web-net's `Render` trait carries a typed view (proposal sent to the web-net session on 2026-11-08), and Luminess implements it behind an optional `web-net` feature.
 - [ ] 24-hour fuzz runs of `compile` and `escape` with no findings.
 - [ ] A benchmark run on a quiet machine, and the numbers in the README and `docs/PERFORMANCE.md` updated.
