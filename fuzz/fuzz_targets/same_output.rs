@@ -303,7 +303,8 @@ fuzz_target!(|data: &[u8]| {
             // Chain links count toward the expression depth now, so a depth
             // error may be found at another place.
             let depth = |e: &str| e.contains("nested too deeply") || e.contains("too long");
-            if !changed && !(depth(&now) && depth(&base)) {
+            // A chain now too long can stop the parse before another error.
+            if !changed && !depth(&now) {
                 assert_eq!(now, base);
             }
         }

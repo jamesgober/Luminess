@@ -347,6 +347,12 @@ fn collect_blocks<'s>(nodes: &'s [Node], out: &mut Vec<(&'s str, usize, &'s [Nod
 /// Merges each run of adjacent literals into one, in time linear in their
 /// length.
 fn merge_literals(nodes: Vec<CNode>) -> Vec<CNode> {
+    if !nodes
+        .windows(2)
+        .any(|w| matches!(w, [CNode::Lit(_), CNode::Lit(_)]))
+    {
+        return nodes;
+    }
     let mut out = Vec::with_capacity(nodes.len());
     let mut run: Option<String> = None;
     for n in nodes {
