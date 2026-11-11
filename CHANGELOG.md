@@ -63,7 +63,8 @@ markup (now escaped).
   output in a script the HTML parser reads as double-escaped (after `<!--`
   and `<script`). Such a script's `</script>` no longer ends the tracker's
   view of it, as it does not end the element.
-- `escape::css_value_allowed` refuses a value that ends in `/`.
+- In CSS, a literal `*` right after an output, and two outputs side by
+  side, are compile errors: a value could open a comment with them.
 - With the `web-net` feature, a render stops at web-net's output budget
   instead of building the whole page first.
 - Text comparisons in conditions and reads of `set` text copy nothing, and

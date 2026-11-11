@@ -440,7 +440,6 @@ pub const BLOCKED_CSS: &str = "blocked";
 /// assert!(!css_value_allowed("expression(alert(1))"));
 /// assert!(!css_value_allowed("rgb(1, 2, 3"));
 /// assert!(!css_value_allowed("1px /* x"));
-/// assert!(!css_value_allowed("1/"));
 /// ```
 #[must_use]
 pub fn css_value_allowed(s: &str) -> bool {
@@ -477,9 +476,8 @@ pub fn css_value_allowed(s: &str) -> bool {
         }
         word_start = None;
     }
-    // `/*` or `*/` would open or close a comment around the template's own
-    // CSS; so would a trailing `/` before a literal `*`.
-    depth == 0 && !s.contains("/*") && !s.contains("*/") && !s.ends_with('/')
+    // `/*` or `*/` would open or close a comment around the template's own CSS.
+    depth == 0 && !s.contains("/*") && !s.contains("*/")
 }
 
 #[cfg(test)]

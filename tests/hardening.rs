@@ -442,9 +442,22 @@ fn svg_animation_values_are_refused() {
 fn css_values_cannot_join_the_text_around_them() {
     let _ = refused("<style>a { width: <{{ p.v }} }</style>");
     let _ = refused("<title>a<{{ p.v }}</title>");
+    let e = refused("<style>a { width: {{ p.v }}* 2 }</style>");
+    assert!(e.contains("open a comment"), "{e}");
+    let _ = refused("<style>a { width: {{ p.v }}{{ p.w }} }</style>");
+    let _ = refused("<p style=\"width: {{ p.v }}*2\">x</p>");
+    // With a space, or after a branch, values are fine.
     assert_eq!(
-        ok("<style>a { width: {{ p.v }}* 2 }</style>", "1/", ""),
-        "<style>a { width: blocked* 2 }</style>"
+        ok("<style>a { width: {{ p.v }} * 2 }</style>", "1/", ""),
+        "<style>a { width: 1/ * 2 }</style>"
+    );
+    assert_eq!(
+        ok(
+            "<style>a { color: {% if p.w %}{{ p.v }}{% endif %} }</style>",
+            "red",
+            "1"
+        ),
+        "<style>a { color: red }</style>"
     );
     // In a script a value is a literal, so `<` before it is fine.
     assert_eq!(

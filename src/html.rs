@@ -461,6 +461,10 @@ impl Sub {
             // output after them is never under-escaped.
             (Self::Url(a), Self::Url(b)) => Some(Self::Url(a.join(b))),
             (Self::Js(a), Self::Js(b)) => a.join(b).map(Self::Js),
+            // Right after an output is the stricter of the two.
+            (Self::Css(Css::Code | Css::AfterValue), Self::Css(Css::Code | Css::AfterValue)) => {
+                Some(Self::Css(Css::AfterValue))
+            }
             _ => None,
         }
     }
@@ -469,6 +473,7 @@ impl Sub {
         match self {
             Self::Url(url) => Self::Url(url.after_output()),
             Self::Js(js) => Self::Js(js.after_value()),
+            Self::Css(Css::Code) => Self::Css(Css::AfterValue),
             other => other,
         }
     }
@@ -510,6 +515,9 @@ impl Sub {
                 attr,
             },
             Css::Str(_) => Slot::Css { string: true, attr },
+            Css::AfterValue | Css::Broken => {
+                Slot::Refused("two CSS values side by side; put a space between them")
+            }
             Css::Slash | Css::Esc | Css::StrEsc(_) => {
                 Slot::Refused("output right after `/` or a backslash in CSS")
             }
@@ -785,6 +793,20 @@ impl Ctx {
     }
 
     fn take_error(&mut self) -> Option<&'static str> {
+        if let Self::Value {
+            sub: sub @ Sub::Css(Css::Broken),
+            ..
+        }
+        | Self::Raw {
+            sub: sub @ Sub::Css(Css::Broken),
+            ..
+        } = self
+        {
+            *sub = Sub::Css(Css::Code);
+            return Some(
+                "`*` right after an output in CSS could open a comment with the value; put a space before it",
+            );
+        }
         if let Self::Value {
             sub: Sub::Url(url), ..
         } = self
