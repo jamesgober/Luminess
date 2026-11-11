@@ -274,6 +274,17 @@ pub fn url(s: &str, out: &mut Vec<u8>) {
     out.extend_from_slice(&b[start..]);
 }
 
+/// As [`url`], with `:` encoded too: for a value written where a URL's scheme
+/// may still be open, so the value cannot complete one.
+pub(crate) fn url_open(s: &str, out: &mut Vec<u8>) {
+    for (i, part) in s.split(':').enumerate() {
+        if i > 0 {
+            out.extend_from_slice(b"%3A");
+        }
+        url(part, out);
+    }
+}
+
 /// Writes `s` as one URL component (a query value, a path segment): every byte
 /// other than letters, digits, `-`, `.`, `_`, and `~` is percent-encoded.
 ///

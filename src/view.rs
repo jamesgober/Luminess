@@ -320,6 +320,15 @@ impl<T: ToValue, const N: usize> List for [T; N] {
     }
 }
 
+/// `true` when two kinds are the same; objects are compared by schema name.
+fn same_kind(a: &Kind, b: &Kind) -> bool {
+    match (a, b) {
+        (Kind::List(x), Kind::List(y)) => same_kind(x, y),
+        (Kind::Object(x), Kind::Object(y)) => x.get().name() == y.get().name(),
+        _ => std::mem::discriminant(a) == std::mem::discriminant(b),
+    }
+}
+
 /// The kind of a field, which the compiler checks every use against.
 #[derive(Clone, Debug)]
 pub enum Kind {
@@ -462,6 +471,34 @@ impl Schema {
     #[must_use]
     pub fn renders(&self) -> bool {
         self.0.renders
+    }
+
+    /// `true` when a view answering `root` answers this schema too: every
+    /// field and method here has the same name and kind at the same position
+    /// in `root`. A template compiled against this schema can then be
+    /// rendered with such a view.
+    pub(crate) fn reads_as(&self, root: &Schema) -> bool {
+        if Arc::ptr_eq(&self.0, &root.0) {
+            return true;
+        }
+        let (a, b) = (&*self.0, &*root.0);
+        a.fields.len() <= b.fields.len()
+            && a.fields
+                .iter()
+                .zip(&b.fields)
+                .zip(a.params.iter().zip(&b.params))
+                .all(|(((na, ka), (nb, kb)), (pa, pb))| {
+                    na == nb
+                        && same_kind(ka, kb)
+                        && match (pa, pb) {
+                            (None, None) => true,
+                            (Some(x), Some(y)) => {
+                                x.len() == y.len()
+                                    && x.iter().zip(y.iter()).all(|(p, q)| same_kind(p, q))
+                            }
+                            _ => false,
+                        }
+                })
     }
 
     /// The id and kind of the field called `name`.

@@ -738,8 +738,12 @@ impl<'a> Run<'a, '_> {
                 }
             }
             (Value::Text(s), Esc::UrlPath) => escape::url(s, self.out),
+            (Value::Text(s), Esc::UrlOpen) => escape::url_open(s, self.out),
             (Value::Text(s), Esc::UrlQuery) => escape::url_component(s, self.out),
-            (Value::Int(i), Esc::Text | Esc::Attr | Esc::Raw | Esc::UrlPath | Esc::UrlQuery) => {
+            (
+                Value::Int(i),
+                Esc::Text | Esc::Attr | Esc::Raw | Esc::UrlPath | Esc::UrlOpen | Esc::UrlQuery,
+            ) => {
                 write_int(i, self.out);
             }
             (Value::Absent, _) if !matches!(esc, Esc::Js { string: false, .. }) => {}
@@ -831,6 +835,7 @@ impl<'a> Run<'a, '_> {
                 }
             }
             Esc::UrlPath => escape::url(s, self.out),
+            Esc::UrlOpen => escape::url_open(s, self.out),
             Esc::UrlQuery => escape::url_component(s, self.out),
             Esc::Raw => self.out.extend_from_slice(s.as_bytes()),
             // JavaScript and CSS escaping leaves no byte HTML treats

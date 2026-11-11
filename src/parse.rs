@@ -6,7 +6,8 @@ use std::ops::Range;
 use crate::lex::{self, Tok};
 
 /// How deep statements and expressions may nest. Deeper input is an error, so
-/// no template can exhaust the stack.
+/// no template can exhaust the stack. Each `and`, `or`, and filter in a chain
+/// counts as a level: a chain builds a tree as deep as it is long.
 pub(crate) const MAX_DEPTH: usize = 64;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -276,33 +277,54 @@ impl EP {
         Ok(())
     }
 
+    /// One more `and`, `or`, or filter in a chain: a level of the tree too.
+    fn link(&mut self) -> Result<(), ParseError> {
+        self.depth += 1;
+        if self.depth > MAX_DEPTH {
+            return err(
+                self.at(),
+                format!(
+                    "expression too long: at most {MAX_DEPTH} levels, each `and`, `or`, and filter counting as one"
+                ),
+            );
+        }
+        Ok(())
+    }
+
     fn expr(&mut self) -> Result<Expr, ParseError> {
         self.enter()?;
+        let mut links = 0;
         let mut left = self.and()?;
         while self.is_word("or") {
             let at = self.at();
             self.pos += 1;
+            self.link()?;
+            links += 1;
             let right = self.and()?;
             left = Expr {
                 kind: ExprKind::Or(Box::new(left), Box::new(right)),
                 at,
             };
         }
-        self.depth -= 1;
+        self.depth -= 1 + links;
         Ok(left)
     }
 
     fn and(&mut self) -> Result<Expr, ParseError> {
+        let mut links = 0;
         let mut left = self.not()?;
         while self.is_word("and") {
             let at = self.at();
             self.pos += 1;
+            self.link()?;
+            links += 1;
             let right = self.not()?;
             left = Expr {
                 kind: ExprKind::And(Box::new(left), Box::new(right)),
                 at,
             };
         }
+        self.depth -= links;
         Ok(left)
     }
 
@@ -340,9 +362,12 @@ impl EP {
     }
 
     fn filtered(&mut self) -> Result<Expr, ParseError> {
+        let mut links = 0;
         let mut base = self.primary()?;
         while self.peek() == Some(&ET::Pipe) {
             self.pos += 1;
+            self.link()?;
+            links += 1;
             let at = self.at();
             let Some((ET::Ident(name), _)) = self.bump() else {
                 return err(at, "expected a filter name after `|`");
@@ -361,6 +386,7 @@ impl EP {
                 at,
             };
         }
+        self.depth -= links;
         Ok(base)
     }
 

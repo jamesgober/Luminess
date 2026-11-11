@@ -147,10 +147,11 @@ let engine = Engine::<Page>::builder().directory("themes/default", "html")?.buil
 // themes/default/partials/nav.html is "partials/nav"
 ```
 
-One set can serve several view shapes: `template_with(name, source, schema)`
-compiles a template against its own schema, so a product page and a blog
-post can be rendered from the same engine as long as they share the Rust
-view type.
+`template_with(name, source, schema)` compiles a template against its own
+schema, for a partial included `with` a value of that schema. Rendered by
+name, a template is always given the engine's view type, so one added this
+way can be rendered by name only when its schema reads that type the same
+way; otherwise it is only for `include ... with`.
 
 ## Escaping
 
@@ -296,7 +297,7 @@ flight finishes on the set it started with.
 3 template errors
   home:1:13: `page` (page) has no field `titel`, did you mean `title`?
   home:4:20: output in an unquoted attribute value; put the value in double quotes
-  nav:2:4: unknown filter `uper`, did you mean `upper`?; the filters are default, upper, lower, trim, length, raw
+  nav:2:4: unknown filter `uper`, did you mean `upper`?; the filters are default, upper, lower, trim, length, truncate, join, first, last, replace, date, number, raw
 ```
 
 `CompileError::diagnostics` gives each one with its template, line,

@@ -8,7 +8,30 @@ All notable changes to `luminess` are documented here. The format follows
 
 ## [0.9.3] - 2026-11-11
 
-Faster rendering, the same output byte for byte. No API changes.
+A security release, and faster rendering. Upgrade from any earlier 0.9 or
+older version: no API changes, no template changes for correct themes.
+
+### Security
+
+- Fixed URL scheme checking for URLs built from several values, or from a
+  value and the template's own text, and for whitespace before a value in a
+  URL attribute. A value written where a URL's scheme may still be open has
+  `:` percent-encoded; a literal `:` or `&` right after such a value is a
+  compile error.
+- Comment and raw-text element parsing now follows the HTML specification:
+  every way a comment can end, and `xmp`, `iframe`, `noembed`, `noframes`,
+  `noscript`, and `plaintext` as raw text.
+- The JavaScript tracker reads HTML-like comments, line breaks in strings,
+  line separators in comments, and `/` after `++` and `--` as browsers do.
+- A long chain of `and`, `or`, or filters is a compile error instead of
+  exhausting the stack.
+- Compiling many includes is linear in time, and a template is limited to
+  16 MiB of text once its includes are inlined.
+- A template added with `Builder::template_with` whose schema the engine's
+  view type does not answer can no longer be rendered by name, only
+  included.
+- Branches that end in the same JavaScript string now join instead of
+  being refused.
 
 ### Changed
 
@@ -26,9 +49,11 @@ Faster rendering, the same output byte for byte. No API changes.
 
 ### Added
 
-- `equivalence/`: property tests that this tree renders exactly what the
-  published base release renders, and the `same_output` fuzz target doing
-  the same on any input. Both run in CI.
+- `equivalence/`: property tests that this tree renders what the published
+  base release renders, and the `same_output` fuzz target doing the same on
+  any input. Both run in CI. Against 0.9.2 they allow differences only where
+  the security fixes above apply, and check there that no `javascript:` URL
+  is written.
 
 ## [0.9.2] - 2026-11-09
 
