@@ -23,12 +23,17 @@ luminess::view!(Item as "item" { name: text, tags: list(text) });
 luminess::view!(Page as "page" { title: text, body: html, count: int, on: bool, items: list(object(Item)) });
 
 fuzz_target!(|data: &[u8]| {
-    let Ok(src) = std::str::from_utf8(data) else { return };
+    let Ok(src) = std::str::from_utf8(data) else {
+        return;
+    };
     // A second template lets includes resolve.
     let built = Engine::<Page>::builder()
         .template("t", src)
         .template("part", "<b>{{ page.title }}</b>")
-        .template("base", "<b>{% block a %}x{% endblock %}{% block b %}{% endblock %}</b>")
+        .template(
+            "base",
+            "<b>{% block a %}x{% endblock %}{% block b %}{% endblock %}</b>",
+        )
         .compile();
     if let Ok(t) = built {
         let page = Page {
@@ -37,8 +42,14 @@ fuzz_target!(|data: &[u8]| {
             count: -3,
             on: true,
             items: vec![
-                Item { name: "javascript:1".into(), tags: vec!["a".into()] },
-                Item { name: String::new(), tags: Vec::new() },
+                Item {
+                    name: "javascript:1".into(),
+                    tags: vec!["a".into()],
+                },
+                Item {
+                    name: String::new(),
+                    tags: Vec::new(),
+                },
             ],
         };
         let mut out = Vec::new();

@@ -23,7 +23,7 @@ A template engine for Rust that compiles once, at startup, against typed views.
   fallback is written, and the rest of the page renders.
 - **Live reload.** Swap in a new theme while serving. A theme with errors is
   refused and the running one stays.
-- **Fast.** A typical 10 KiB page renders in about 9 µs, 3 to 5 times
+- **Fast.** A typical 10 KiB page renders in about 4 µs, 4 to 7 times
   faster than Tera and MiniJinja.
 - **Zero dependencies.**
 
@@ -336,20 +336,20 @@ a script block with three values, and a footer, about 10.9 KiB of output and 150
 
 | Case | Time |
 |---|---|
-| typical page | about 9 µs |
-| one value | about 60 ns |
-| compiling the page and its include | about 40 µs |
-| escaping text for HTML | about 4 GB/s with nothing to escape |
+| typical page | about 4 µs |
+| one value, whole render | about 40 ns |
+| compiling the page and its include | about 28 µs |
+| escaping text for HTML | about 12 GB/s with nothing to escape |
 
 `benches/compare` renders the same page with other Rust engines
 (`cargo run --release` in that folder):
 
 | Engine | Typical page |
 |---|---|
-| Askama 0.16 | about 4 µs |
-| **Luminess** | about 9 µs |
-| Tera 2 | about 28 µs |
-| MiniJinja 3 | about 45 µs |
+| Askama 0.16 | about 2 µs |
+| **Luminess** | about 3.6 µs |
+| Tera 2 | about 16 µs |
+| MiniJinja 3 | about 26 µs |
 
 Askama turns templates into Rust code when your program is built, so it is
 faster still, but it cannot reload a theme or compile against schemas known
@@ -362,8 +362,8 @@ A render takes no lock and makes no shared atomic write: each thread keeps
 the engine's current set and checks one counter, so renders on many threads
 do not contend.
 
-Measured on a shared Windows 11 desktop machine under load from other work;
-the fastest of seven runs.
+Measured on a shared Windows 11 desktop while it was quiet, the fastest of
+seven runs; `docs/PERFORMANCE.md` has the ranges and the 0.9.2 comparison.
 
 ## With web-net
 

@@ -17,8 +17,30 @@ pub fn html(s: &str, out: &mut Vec<u8>) {
     let n = b.len();
     let mut start = 0;
     let mut i = 0;
-    // Eight bytes at a time; most text has nothing to escape. A chunk that
-    // does is escaped into a small buffer and copied out once.
+    // Sixteen bytes at a time while nothing needs escaping, then eight; a
+    // chunk that does is escaped into a small buffer and copied out once.
+    while i + 16 <= n {
+        let mut w = [0u8; 8];
+        let mut v = [0u8; 8];
+        w.copy_from_slice(&b[i..i + 8]);
+        v.copy_from_slice(&b[i + 8..i + 16]);
+        let (w, v) = (u64::from_le_bytes(w), u64::from_le_bytes(v));
+        if special_bytes(w) | special_bytes(v) == 0 {
+            i += 16;
+            continue;
+        }
+        if special_bytes(w) != 0 {
+            out.extend_from_slice(&b[start..i]);
+            html_chunk(&w.to_le_bytes(), out);
+            start = i + 8;
+        }
+        if special_bytes(v) != 0 {
+            out.extend_from_slice(&b[start..i + 8]);
+            html_chunk(&v.to_le_bytes(), out);
+            start = i + 16;
+        }
+        i += 16;
+    }
     while i + 8 <= n {
         let mut w = [0u8; 8];
         w.copy_from_slice(&b[i..i + 8]);
@@ -89,15 +111,20 @@ const fn zero_bytes(w: u64) -> u64 {
     w.wrapping_sub(ONES) & !w & HIGHS
 }
 
-/// `true` when any byte of `w` is one of `& < > " '`.
+/// Nonzero when any byte of `w` is one of `& < > " '`.
 #[inline]
-const fn has_html_special(w: u64) -> bool {
-    (zero_bytes(w ^ (ONES * 0x26))
+const fn special_bytes(w: u64) -> u64 {
+    zero_bytes(w ^ (ONES * 0x26))
         | zero_bytes(w ^ (ONES * 0x3c))
         | zero_bytes(w ^ (ONES * 0x3e))
         | zero_bytes(w ^ (ONES * 0x22))
-        | zero_bytes(w ^ (ONES * 0x27)))
-        != 0
+        | zero_bytes(w ^ (ONES * 0x27))
+}
+
+/// `true` when any byte of `w` is one of `& < > " '`.
+#[inline]
+const fn has_html_special(w: u64) -> bool {
+    special_bytes(w) != 0
 }
 
 /// What [`url`] writes in place of a URL whose scheme is not allowed.

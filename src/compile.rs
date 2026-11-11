@@ -111,6 +111,22 @@ pub(crate) enum CExpr {
 pub(crate) enum CNode {
     Lit(Box<str>),
     Out(CExpr, Esc),
+    /// An output that is a plain field path from the root (`base: None`) or
+    /// from a loop or `include ... with` slot: the common case, read without
+    /// the general evaluator.
+    Field {
+        base: Option<u16>,
+        ids: Box<[FieldId]>,
+        esc: Esc,
+    },
+    /// Literal text followed by a `Field`: the most common pair, walked as
+    /// one node.
+    LitField {
+        lit: Box<str>,
+        base: Option<u16>,
+        ids: Box<[FieldId]>,
+        esc: Esc,
+    },
     /// A view that renders itself. In HTML text it writes markup; anywhere
     /// else its text form, escaped for the place. `fallback` replaces the
     /// view's own fallback when it fails.
@@ -146,6 +162,30 @@ pub(crate) struct Program {
     pub nodes: Vec<CNode>,
     /// The deepest loop nesting: the number of loop slots a render needs.
     pub slots: usize,
+    /// The bytes of literal text, each loop body counted once: a render
+    /// reserves this much in the output up front.
+    pub estimate: usize,
+}
+
+/// The literal bytes of `nodes`, each body counted once.
+fn literal_bytes(nodes: &[CNode]) -> usize {
+    nodes
+        .iter()
+        .map(|n| match n {
+            CNode::Lit(s) | CNode::LitField { lit: s, .. } => s.len(),
+            CNode::If(arms, other) => arms
+                .iter()
+                .map(|(_, b)| literal_bytes(b))
+                .max()
+                .unwrap_or(0)
+                .max(literal_bytes(other)),
+            CNode::For {
+                body, otherwise, ..
+            } => literal_bytes(body).max(literal_bytes(otherwise)),
+            CNode::Try(body, _) | CNode::Bind { body, .. } => literal_bytes(body),
+            _ => 0,
+        })
+        .sum()
 }
 
 // ---------------------------------------------------------------------------
@@ -296,6 +336,31 @@ fn collect_blocks<'s>(nodes: &'s [Node], out: &mut Vec<(&'s str, usize, &'s [Nod
     }
 }
 
+/// Folds each literal followed by a plain field output into one node.
+fn fuse(nodes: Vec<CNode>) -> Vec<CNode> {
+    let mut out = Vec::with_capacity(nodes.len());
+    let mut it = nodes.into_iter().peekable();
+    while let Some(n) = it.next() {
+        if let CNode::Lit(lit) = n {
+            if matches!(it.peek(), Some(CNode::Field { .. })) {
+                if let Some(CNode::Field { base, ids, esc }) = it.next() {
+                    out.push(CNode::LitField {
+                        lit,
+                        base,
+                        ids,
+                        esc,
+                    });
+                    continue;
+                }
+            }
+            out.push(CNode::Lit(lit));
+        } else {
+            out.push(n);
+        }
+    }
+    out
+}
+
 /// Where a node starts, for error messages.
 fn node_at(n: &Node) -> Option<usize> {
     match n {
@@ -384,9 +449,11 @@ impl<'s> Compiler<'s> {
                 "the template is too large once its includes are inlined",
             );
         }
+        let estimate = literal_bytes(&nodes);
         (self.diags.len() == before).then_some(Program {
             nodes,
             slots: self.slots,
+            estimate,
         })
     }
 
@@ -830,7 +897,7 @@ impl<'s> Compiler<'s> {
             }
         }
         scope.vars.truncate(vars_before);
-        (out, ctx)
+        (fuse(out), ctx)
     }
 
     fn join_all(&mut self, t: usize, at: usize, start: Ctx, ends: &[Ctx], what: &str) -> Ctx {
@@ -853,6 +920,29 @@ impl<'s> Compiler<'s> {
             }
         }
         j
+    }
+
+    /// `Out`, or `Field` when the expression is a plain field path whose
+    /// base never holds built text (a `set` value may).
+    fn out_node(ce: CExpr, esc: Esc, scope: &Scope) -> CNode {
+        let (base, steps) = match &ce {
+            CExpr::Root(steps) => (None, steps),
+            CExpr::Slot(s, steps) if !scope.vars.iter().any(|v| v.slot == *s && !v.is_loop) => {
+                (Some(*s), steps)
+            }
+            _ => return CNode::Out(ce, esc),
+        };
+        let ids: Option<Box<[FieldId]>> = steps
+            .iter()
+            .map(|st| match st {
+                Step::Field(id) => Some(*id),
+                Step::Call(..) => None,
+            })
+            .collect();
+        match ids {
+            Some(ids) => CNode::Field { base, ids, esc },
+            None => CNode::Out(ce, esc),
+        }
     }
 
     fn output(&mut self, t: usize, e: &Expr, ctx: Ctx, scope: &Scope) -> Option<CNode> {
@@ -957,9 +1047,9 @@ impl<'s> Compiler<'s> {
             if !matches!(ty, Ty::Text | Ty::Html | Ty::Unknown) {
                 self.error(t, e.at, "`raw` applies to text");
             }
-            return Some(CNode::Out(ce, Esc::Raw));
+            return Some(Self::out_node(ce, Esc::Raw, scope));
         }
-        Some(CNode::Out(ce, esc))
+        Some(Self::out_node(ce, esc, scope))
     }
 
     fn cond(&mut self, t: usize, e: &Expr, scope: &Scope) -> CExpr {

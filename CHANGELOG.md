@@ -6,6 +6,30 @@ All notable changes to `luminess` are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.9.3] - 2026-11-11
+
+Faster rendering, the same output byte for byte. No API changes.
+
+### Changed
+
+- A typical page renders about 30% faster (3.6 to 4.2 µs, from 5.1 to
+  5.3 µs on the same machine). A plain field output costs about 6 ns of
+  dispatch instead of 12.5, a condition on a field about 6 ns instead of 16,
+  and an integer about 8 ns instead of 16.
+- Plain field outputs and conditions read their path directly; a literal and
+  the output after it are walked as one node; text, URLs, and integers are
+  written without the general evaluator; integers two digits per step.
+- The output buffer is reserved once from the template's literal size,
+  which saves about 1.5 µs a page when rendering into a new `String`.
+- `escape::html` skips sixteen bytes at a time on text with nothing to
+  escape (about 12.5 GB/s, from 8).
+
+### Added
+
+- `equivalence/`: property tests that this tree renders exactly what the
+  published base release renders, and the `same_output` fuzz target doing
+  the same on any input. Both run in CI.
+
 ## [0.9.2] - 2026-11-09
 
 ### Changed
