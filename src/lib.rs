@@ -103,7 +103,7 @@ mod view;
 pub mod web;
 
 #[doc(hidden)]
-pub use view::__html;
+pub use view::{__HtmlItems, __html, __html_list};
 
 /// Runs every example in `docs/API.md` as a doctest.
 #[cfg(doctest)]
@@ -114,7 +114,7 @@ pub use engine::{Builder, Engine, Template};
 pub use error::{Diagnostic, Error, ErrorKind};
 pub use output::{BlockError, Output};
 pub use render::Rendered;
-pub use view::{Answer, HasSchema, Kind, List, Schema, SchemaBuilder, ToValue, Value, View};
+pub use view::{Answer, HasSchema, Html, Kind, List, Schema, SchemaBuilder, ToValue, Value, View};
 
 /// Compiles `source` and renders it for `view`, in one call.
 ///

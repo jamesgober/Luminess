@@ -775,8 +775,11 @@ impl<'a> Run<'a, '_> {
     #[inline]
     fn write_value(&mut self, v: Value<'a>, esc: Esc) {
         match (v, esc) {
-            (Value::Text(s), Esc::Text | Esc::Attr) => escape::html(s, self.out),
-            (Value::Text(s) | Value::Html(s), Esc::Raw) | (Value::Html(s), Esc::Text) => {
+            (Value::Text(s) | Value::Html(s), Esc::Text)
+            | (Value::Text(s), Esc::Attr | Esc::Html) => {
+                escape::html(s, self.out);
+            }
+            (Value::Text(s) | Value::Html(s), Esc::Raw) | (Value::Html(s), Esc::Html) => {
                 self.out.extend_from_slice(s.as_bytes());
             }
             (Value::Text(s), Esc::UrlStart) => {
@@ -791,7 +794,13 @@ impl<'a> Run<'a, '_> {
             (Value::Text(s), Esc::UrlQuery) => escape::url_component(s, self.out),
             (
                 Value::Int(i),
-                Esc::Text | Esc::Attr | Esc::Raw | Esc::UrlPath | Esc::UrlOpen | Esc::UrlQuery,
+                Esc::Text
+                | Esc::Html
+                | Esc::Attr
+                | Esc::Raw
+                | Esc::UrlPath
+                | Esc::UrlOpen
+                | Esc::UrlQuery,
             ) => {
                 write_int(i, self.out);
             }
@@ -855,7 +864,7 @@ impl<'a> Run<'a, '_> {
                 Value::Float(f) => write_float(f, self.out, &mut self.scratch),
                 Value::Text(s) => self.text_out(s, esc),
                 Value::Html(s) => {
-                    if matches!(esc, Esc::Text | Esc::Raw) {
+                    if matches!(esc, Esc::Html | Esc::Raw) {
                         self.out.extend_from_slice(s.as_bytes());
                     } else {
                         self.text_out(s, esc);
@@ -876,7 +885,7 @@ impl<'a> Run<'a, '_> {
 
     fn text_out(&mut self, s: &str, esc: Esc) {
         match esc {
-            Esc::Text | Esc::Attr => escape::html(s, self.out),
+            Esc::Text | Esc::Html | Esc::Attr => escape::html(s, self.out),
             Esc::UrlStart => {
                 if escape::url_allowed(s) {
                     escape::url(s, self.out);

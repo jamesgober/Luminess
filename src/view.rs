@@ -103,6 +103,7 @@ pub trait View {
 /// The name says what it is for: the answer to a call. A [`Value`] alone
 /// cannot hold text built during the call, because it only borrows.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum Answer<'a> {
     /// A value, borrowed or scalar.
     Value(Value<'a>),
@@ -154,6 +155,7 @@ pub trait List {
 
 /// One value read from a [`View`] or a [`List`].
 #[derive(Clone, Copy)]
+#[non_exhaustive]
 pub enum Value<'a> {
     /// No value: writes nothing and is false in a condition.
     Absent,
@@ -330,6 +332,7 @@ fn same_kind(a: &Kind, b: &Kind) -> bool {
 
 /// The kind of a field, which the compiler checks every use against.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub enum Kind {
     /// [`Value::Bool`].
     Bool,
@@ -648,6 +651,66 @@ pub trait HasSchema {
     fn schema() -> Schema;
 }
 
+/// Markup the application trusts: written as is in HTML text, escaped
+/// anywhere else. A field declared `html` in [`view!`](crate::view) can hold
+/// a `String`; the items of a `list(html)` field are `Html`, so a list of
+/// plain strings is never taken for markup by mistake.
+///
+/// ```
+/// use luminess::{Html, Template};
+///
+/// struct Page { snippets: Vec<Html> }
+/// luminess::view!(Page as "page" { snippets: list(html) });
+///
+/// let page = Page { snippets: vec![Html::from("<b>sanitized</b>")] };
+/// let t = Template::<Page>::new("{% for s in page.snippets %}{{ s }}{% endfor %}")?;
+/// assert_eq!(t.render(&page)?, "<b>sanitized</b>");
+/// # Ok::<(), luminess::Error>(())
+/// ```
+///
+/// A list of plain strings declared `list(html)` does not compile:
+///
+/// ```compile_fail
+/// struct Page { snippets: Vec<String> }
+/// luminess::view!(Page as "page" { snippets: list(html) });
+/// ```
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct Html(pub String);
+
+impl From<String> for Html {
+    fn from(s: String) -> Self {
+        Self(s)
+    }
+}
+
+impl From<&str> for Html {
+    fn from(s: &str) -> Self {
+        Self(s.to_owned())
+    }
+}
+
+impl ToValue for Html {
+    fn to_value(&self) -> Value<'_> {
+        Value::Html(&self.0)
+    }
+}
+
+/// The types a `list(html)` field of [`view!`](crate::view) may have.
+#[doc(hidden)]
+#[diagnostic::on_unimplemented(
+    message = "a `list(html)` field holds `luminess::Html` items",
+    label = "use `Vec<luminess::Html>` here, or declare the field `list(text)`"
+)]
+pub trait __HtmlItems: ToValue {}
+impl __HtmlItems for Vec<Html> {}
+impl<const N: usize> __HtmlItems for [Html; N] {}
+
+#[doc(hidden)]
+#[must_use]
+pub fn __html_list<L: __HtmlItems>(l: &L) -> Value<'_> {
+    l.to_value()
+}
+
 #[doc(hidden)]
 #[must_use]
 pub fn __html(v: Value<'_>) -> Value<'_> {
@@ -713,7 +776,7 @@ macro_rules! view {
                     $(pub const $field: usize = Field::$field as usize;)*
                 }
                 match index {
-                    $(__ids::$field => $crate::view!(@value self.$field, $kind),)*
+                    $(__ids::$field => $crate::view!(@value self.$field, $kind $(( $($arg)* ))?),)*
                     _ => $crate::Value::Absent,
                 }
             }
@@ -737,5 +800,6 @@ macro_rules! view {
     };
 
     (@value $e:expr, html) => { $crate::__html($crate::ToValue::to_value(&$e)) };
-    (@value $e:expr, $other:ident) => { $crate::ToValue::to_value(&$e) };
+    (@value $e:expr, list(html)) => { $crate::__html_list(&$e) };
+    (@value $e:expr, $other:ident $(( $($arg:tt)* ))?) => { $crate::ToValue::to_value(&$e) };
 }

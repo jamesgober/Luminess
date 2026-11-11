@@ -29,8 +29,12 @@ pub(crate) const MAX_LITERAL_BYTES: usize = 16 << 20;
 /// How an output is escaped.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Esc {
-    /// HTML text: text escaped, trusted markup as is.
+    /// HTML text, for a value the compiler typed text: everything escaped,
+    /// even a `Value::Html` a view or filter answers where it declared text.
     Text,
+    /// HTML text, for a value the compiler typed html: trusted markup as is,
+    /// text escaped.
+    Html,
     /// A quoted attribute value or RCDATA: everything escaped.
     Attr,
     /// The start of a URL attribute: scheme checked, then normalized.
@@ -1027,6 +1031,12 @@ impl<'s> Compiler<'s> {
             Slot::Js { string, attr } => Esc::Js { string, attr },
             Slot::Css { string, attr } => Esc::Css { string, attr },
         };
+        // Markup passes only where the schema declared it.
+        let esc = if esc == Esc::Text && matches!(ty, Ty::Html) {
+            Esc::Html
+        } else {
+            esc
+        };
         match ty {
             Ty::Object(s) if s.renders() => {
                 if raw {
@@ -1070,7 +1080,7 @@ impl<'s> Compiler<'s> {
             _ => {}
         }
         if raw {
-            if esc != Esc::Text {
+            if !matches!(esc, Esc::Text | Esc::Html) {
                 self.error(
                     t,
                     e.at,
