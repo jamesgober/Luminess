@@ -299,8 +299,12 @@ fuzz_target!(|data: &[u8]| {
             }
         }
         (Err(now), Err(base)) => {
-            if !changed {
-                assert_eq!(now.to_string(), base.to_string());
+            let (now, base) = (now.to_string(), base.to_string());
+            // Chain links count toward the expression depth now, so a depth
+            // error may be found at another place.
+            let depth = |e: &str| e.contains("nested too deeply") || e.contains("too long");
+            if !changed && !(depth(&now) && depth(&base)) {
+                assert_eq!(now, base);
             }
         }
         // Branches that end in the same JavaScript string join now.
