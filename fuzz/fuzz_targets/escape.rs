@@ -28,7 +28,7 @@ fuzz_target!(|data: &[u8]| {
         .build()
         .expect("compiles");
     let page = Page { v: v.to_owned() };
-    let r = |n: &str| engine.render_to_string(n, &page).expect("renders");
+    let r = |n: &str| engine.render(n, &page).expect("renders");
 
     let text = r("text");
     assert!(!text[3..text.len() - 4].contains('<'));

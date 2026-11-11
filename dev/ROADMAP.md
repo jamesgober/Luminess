@@ -1,4 +1,4 @@
-# Luminess roadmap: 0.2 to 0.9
+# Luminess roadmap: 0.2 to 0.10
 
 Every version ends the same way: fuzzing of the lexer and parser (the
 `compile` and `escape` targets), property tests for every escaper it touches,
@@ -78,6 +78,16 @@ The rebuild. Nothing of 0.1's API remains.
 - [x] `docs/` complete: `SYNTAX.md`, `API.md`, `SECURITY.md`, `PERFORMANCE.md`.
 - [x] Release candidate for the 1.x API. 1.0 waits for its own decision.
 
+## 0.10.0: a simpler API
+
+- [x] Tier 1 calls that work with plain `?`: `Engine::from_dir`, `Engine::reload_dir`, `Template`, and `luminess::render`.
+- [x] One error type (`Error`, `ErrorKind`) for loading, compiling, and rendering.
+- [x] Unclear names replaced: `Shaped` is `HasSchema`, `Computed` is `Answer`, `Failed` is `BlockError`, `FieldId` is a plain `usize`; `SchemaRef` is gone.
+- [x] Duplicate paths removed: `Templates`, `swap`, `reload(builder)`, and `compile` gave way to `Engine` as the compiled set, with `replace` and `contains`.
+- [x] `render` returns a `String`; `render_into` takes a buffer.
+- [x] `docs/API.md` in the reference format, every example a doctest; README and crate docs lead with the Tier 1 calls.
+- [x] Output byte for byte the same as 0.9.3 (`equivalence/`, `same_output` fuzz target); no slowdown in the render benchmark.
+
 ## Before 1.0 (James decides)
 
 - [ ] James reviews `dev/SYNTAX.md` (frozen in 0.9.0); any changes he asks for land first, with a migration note.
@@ -85,3 +95,4 @@ The rebuild. Nothing of 0.1's API remains.
 - [ ] 24-hour fuzz runs of `compile` and `escape` with no findings.
 - [ ] A benchmark run on a quiet machine, and the numbers in the README and `docs/PERFORMANCE.md` updated.
 - [ ] One real theme (a site's layouts, partials, and blocks) built on it, and any rough edges it finds fixed.
+- [ ] James reviews the 0.10 names (`Engine`, `Template`, `HasSchema`, `Answer`, `BlockError`, `render`/`render_into`, `replace`, `from_dir`/`reload_dir`); docs/API.md ends with why each was chosen.

@@ -212,7 +212,7 @@ fn main() {
     time("luminess", iters, || {
         out.clear();
         let _ = lum
-            .render("page", black_box(&p), &mut out)
+            .render_into("page", black_box(&p), &mut out)
             .expect("renders");
         out.len()
     });

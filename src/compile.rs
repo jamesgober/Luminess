@@ -237,7 +237,7 @@ impl Ty {
             Kind::Float => Self::Float,
             Kind::Text => Self::Text,
             Kind::Html => Self::Html,
-            Kind::Object(s) => Self::Object(s.get()),
+            Kind::Object(s) => Self::Object(s.clone()),
             Kind::List(k) => Self::List((**k).clone()),
         }
     }
@@ -1392,10 +1392,10 @@ impl<'s> Compiler<'s> {
         let name = seg.name.as_str();
         match &seg.args {
             None => {
-                if let Some((id, kind)) = s.field(name) {
+                if let Some((id, kind)) = s.field_id(name) {
                     return Some((Step::Field(id), Ty::of(kind)));
                 }
-                if s.method(name).is_some() {
+                if s.method_id(name).is_some() {
                     self.error(
                         t,
                         seg.at,
@@ -1412,8 +1412,8 @@ impl<'s> Compiler<'s> {
                 None
             }
             Some(args) => {
-                let Some((id, params, ret)) = s.method(name) else {
-                    if s.field(name).is_some() {
+                let Some((id, params, ret)) = s.method_id(name) else {
+                    if s.field_id(name).is_some() {
                         self.error(
                             t,
                             seg.at,

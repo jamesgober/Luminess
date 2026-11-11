@@ -69,11 +69,11 @@ impl fmt::Write for Output<'_> {
 /// A block that could not render. Its partial output is removed and its
 /// fallback written; the reason reaches the caller in [`Rendered`](crate::Rendered).
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Failed {
+pub struct BlockError {
     reason: Cow<'static, str>,
 }
 
-impl Failed {
+impl BlockError {
     /// A failure with this reason, which is for logs, never shown to visitors.
     pub fn new(reason: impl Into<Cow<'static, str>>) -> Self {
         Self {
@@ -88,10 +88,10 @@ impl Failed {
     }
 }
 
-impl fmt::Display for Failed {
+impl fmt::Display for BlockError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.reason)
     }
 }
 
-impl std::error::Error for Failed {}
+impl std::error::Error for BlockError {}

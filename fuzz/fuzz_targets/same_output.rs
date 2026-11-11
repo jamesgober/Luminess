@@ -274,7 +274,7 @@ fuzz_target!(|data: &[u8]| {
     let now = luminess::Engine::<Page>::builder()
         .template("t", src)
         .template("part", "<b>{{ page.title }}</b>")
-        .compile();
+        .build();
     let base = luminess_base::Engine::<Page>::builder()
         .template("t", src)
         .template("part", "<b>{{ page.title }}</b>")
@@ -286,7 +286,7 @@ fuzz_target!(|data: &[u8]| {
     let oracle = !lower.contains('j') && !lower.contains('&');
     match (now, base) {
         (Ok(now), Ok(base)) => {
-            let a = now.render_to_string("t", &page).unwrap();
+            let a = now.render("t", &page).unwrap();
             let b = base.render_to_string("t", &page).unwrap();
             assert!(!oracle || no_script_urls(&a), "{a}");
             if tracker_changed(src) {
@@ -316,7 +316,7 @@ fuzz_target!(|data: &[u8]| {
         }
         // Branches that end in the same JavaScript string join now.
         (Ok(now), Err(base)) if changed || base.to_string().contains("different places") => {
-            let a = now.render_to_string("t", &page).unwrap();
+            let a = now.render("t", &page).unwrap();
             assert!(!oracle || no_script_urls(&a), "{a}");
         }
         (Err(_), Ok(_)) if changed => {}

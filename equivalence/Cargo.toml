@@ -9,7 +9,7 @@ description = "Checks that this tree renders exactly what a published release do
 # dependency tree: this crate is its own workspace.
 [dependencies]
 luminess = { path = ".." }
-luminess_base = { package = "luminess", version = "=0.9.2" }
+luminess_base = { package = "luminess", version = "=0.9.3" }
 
 [dev-dependencies]
 proptest = { version = "1", default-features = false, features = ["std"] }

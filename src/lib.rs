@@ -1,53 +1,74 @@
 //! # luminess
 //!
-//! A template engine that compiles once, at startup, against typed views.
+//! A template engine that compiles once, at startup, against your own Rust
+//! types, and escapes every value for the place it is written.
 //!
-//! - **Checked at startup.** Templates compile against a [`Schema`]. An unknown
-//!   field, filter, or template is a [`CompileError`] with the template name,
-//!   line, and column, never an empty string in production.
-//! - **Escaped for where it goes.** The compiler tracks the HTML around every
-//!   `{{ }}` and picks the escaper: HTML text, attribute value, URL,
-//!   JavaScript, or CSS. Output where no escaper is safe (an unquoted
-//!   attribute, a comment, a tag name, a regular expression) is refused at
-//!   compile time. Unescaped output needs an explicit `| raw`.
-//! - **No data conversion.** A render reads your values through the [`View`]
-//!   trait, by field ids the compiler resolved, and writes straight into your
-//!   `Vec<u8>`. No JSON, no maps, no copies of your data.
-//! - **Blocks that render themselves.** A view can write its own markup, and
-//!   when it fails its output is removed and its fallback written; the rest of
-//!   the page still renders.
-//! - **Live reload.** An [`Engine`] swaps in a newly compiled set while it
-//!   serves; a set with errors is refused and the running one stays.
-//! - **Zero dependencies.**
+//! ## Start here
 //!
-//! ```
+//! Declare what templates may read, load a theme, render:
+//!
+//! ```no_run
 //! use luminess::Engine;
 //!
-//! struct Post { title: String, url: String }
-//! struct Page { title: String, posts: Vec<Post> }
+//! struct Page { title: String, body: String }
+//! luminess::view!(Page as "page" { title: text, body: html });
 //!
-//! luminess::view!(Post as "post" { title: text, url: text });
-//! luminess::view!(Page as "page" { title: text, posts: list(object(Post)) });
-//!
-//! let engine = Engine::<Page>::builder()
-//!     .template("home", r#"<h1>{{ page.title }}</h1>
-//! <ul>{% for post in page.posts %}<li><a href="{{ post.url }}">{{ post.title }}</a></li>{% endfor %}</ul>"#)
-//!     .build()?;
-//!
-//! let page = Page {
-//!     title: "Tom & Jerry".into(),
-//!     posts: vec![Post { title: "<script>".into(), url: "javascript:alert(1)".into() }],
-//! };
-//! let mut out = Vec::new();
-//! engine.render("home", &page, &mut out)?;
-//! assert_eq!(
-//!     String::from_utf8(out)?,
-//!     "<h1>Tom &amp; Jerry</h1>\n<ul><li><a href=\"#blocked\">&lt;script&gt;</a></li></ul>"
-//! );
-//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! let engine = Engine::<Page>::from_dir("themes/default")?;   // every .html file
+//! let html = engine.render("home", &Page { title: "Hi".into(), body: "<p>ok</p>".into() })?;
+//! # Ok::<(), luminess::Error>(())
 //! ```
 //!
-//! The template syntax is close to Jinja and Twig; the README describes it.
+//! One template, compiled once:
+//!
+//! ```
+//! # struct Page { title: String }
+//! # luminess::view!(Page as "page" { title: text });
+//! let title = luminess::Template::<Page>::new("<h1>{{ page.title }}</h1>")?;
+//! assert_eq!(title.render(&Page { title: "Tom & Jerry".into() })?, "<h1>Tom &amp; Jerry</h1>");
+//! # Ok::<(), luminess::Error>(())
+//! ```
+//!
+//! One render, compiling the template on the spot (for scripts and tests):
+//!
+//! ```
+//! # struct Page { title: String }
+//! # luminess::view!(Page as "page" { title: text });
+//! let html = luminess::render("<b>{{ page.title }}</b>", &Page { title: "x".into() })?;
+//! assert_eq!(html, "<b>x</b>");
+//! # Ok::<(), luminess::Error>(())
+//! ```
+//!
+//! Every call returns [`Error`], so `?` works throughout.
+//!
+//! ## What it does
+//!
+//! - **Checked at startup.** An unknown field, filter, template, or block is
+//!   an [`Error`] with the template name, line, and column, never an empty
+//!   string in production.
+//! - **Escaped for where it goes.** The compiler follows the HTML around each
+//!   `{{ }}` and picks the escaper: HTML text, attribute value, URL,
+//!   JavaScript, or CSS. Places where no escaper is safe are refused at
+//!   startup. Unescaped output needs an explicit `| raw`.
+//! - **No data conversion.** A render reads your values in place and writes
+//!   straight into a buffer: no JSON, no maps, no copies.
+//! - **Blocks that render themselves**, with a fallback when they fail; the
+//!   rest of the page still renders.
+//! - **Live reload.** [`Engine::reload_dir`] and [`Engine::replace`] swap in a
+//!   new theme while serving; a theme with errors is refused and the running
+//!   one stays.
+//! - **Zero dependencies.**
+//!
+//! ## Going further
+//!
+//! - [`Engine::builder`]: templates from strings, output limits, your own
+//!   filters, and [`Builder::check`] for CI.
+//! - [`Engine::render_into`]: render into a buffer you reuse, and see which
+//!   blocks fell back.
+//! - [`View`], [`Value`], [`Schema`], and [`Output`]: views written by hand,
+//!   schemas built at startup, and blocks that render their own markup.
+//!
+//! The template syntax is close to Jinja and Twig; `docs/SYNTAX.md` in the
+//! repository describes it, and `docs/API.md` walks through the whole API.
 
 #![doc(html_root_url = "https://docs.rs/luminess")]
 #![cfg_attr(docsrs, feature(doc_cfg))]
@@ -84,10 +105,36 @@ pub mod web;
 #[doc(hidden)]
 pub use view::__html;
 
-pub use engine::{Builder, Engine, Templates};
-pub use error::{CompileError, Diagnostic, RenderError, RenderErrorKind};
-pub use output::{Failed, Output};
+/// Runs every example in `docs/API.md` as a doctest.
+#[cfg(doctest)]
+#[doc = include_str!("../docs/API.md")]
+struct ApiExamples;
+
+pub use engine::{Builder, Engine, Template};
+pub use error::{Diagnostic, Error, ErrorKind};
+pub use output::{BlockError, Output};
 pub use render::Rendered;
-pub use view::{
-    Computed, FieldId, Kind, List, Schema, SchemaBuilder, SchemaRef, Shaped, ToValue, Value, View,
-};
+pub use view::{Answer, HasSchema, Kind, List, Schema, SchemaBuilder, ToValue, Value, View};
+
+/// Compiles `source` and renders it for `view`, in one call.
+///
+/// The template is compiled on every call, which costs tens of
+/// microseconds: fine for a script, a test, or a one-off email, and the wrong
+/// tool for a page served many times. For that, compile once with
+/// [`Template::new`] or [`Engine::from_dir`] and render many times.
+///
+/// ```
+/// struct Note { text: String }
+/// luminess::view!(Note as "note" { text: text });
+///
+/// let html = luminess::render("<p>{{ note.text }}</p>", &Note { text: "a < b".into() })?;
+/// assert_eq!(html, "<p>a &lt; b</p>");
+/// # Ok::<(), luminess::Error>(())
+/// ```
+///
+/// # Errors
+///
+/// [`ErrorKind::Compile`] with every problem in the template.
+pub fn render<V: View + HasSchema>(source: &str, view: &V) -> Result<String, Error> {
+    Template::<V>::new(source)?.render(view)
+}

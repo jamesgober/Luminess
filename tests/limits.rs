@@ -1,6 +1,6 @@
 //! Error reports, limits, and checking without keeping the result.
 
-use luminess::{Engine, RenderErrorKind};
+use luminess::{Engine, ErrorKind};
 
 struct Page {
     title: String,
@@ -61,14 +61,14 @@ fn output_limit() {
         .build()
         .unwrap();
     let mut out = b"keep".to_vec();
-    let err = engine.render("big", &page(), &mut out).unwrap_err();
-    assert_eq!(err.kind(), RenderErrorKind::TooLarge);
+    let err = engine.render_into("big", &page(), &mut out).unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::TooLarge);
     assert_eq!(
         err.to_string(),
         "the output of `big` passed the limit of 1000 bytes"
     );
     assert_eq!(out, b"keep", "what the render wrote is removed");
-    assert_eq!(engine.render_to_string("small", &page()).unwrap(), "T");
+    assert_eq!(engine.render("small", &page()).unwrap(), "T");
 }
 
 #[test]
@@ -89,7 +89,7 @@ fn check_keeps_the_builder() {
     assert!(bad.check().is_err());
     // The builder is still usable after a check.
     let engine = b.build().unwrap();
-    assert_eq!(engine.render_to_string("t", &page()).unwrap(), "T");
+    assert_eq!(engine.render("t", &page()).unwrap(), "T");
 }
 
 #[test]
@@ -102,12 +102,7 @@ fn nested_loops_compile_in_linear_time() {
         ("{% for i in page.items %}?q", "{% endfor %}"),
     ] {
         let src = format!("<a href=\"/a{}x{}\">", open.repeat(64), close.repeat(64));
-        assert!(
-            Engine::<Page>::builder()
-                .template("t", src)
-                .compile()
-                .is_ok()
-        );
+        assert!(Engine::<Page>::builder().template("t", src).build().is_ok());
     }
     assert!(
         t.elapsed() < std::time::Duration::from_secs(2),

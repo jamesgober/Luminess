@@ -41,7 +41,7 @@ fn render(src: &str, title: &str) -> String {
         .build()
         .unwrap();
     engine
-        .render_to_string(
+        .render(
             "t",
             &Page {
                 title: title.to_owned(),
@@ -151,7 +151,7 @@ proptest! {
 
     #[test]
     fn compiling_anything_never_panics(src in "[{}%#a-z .|\"'<>=!()\\-/]{0,80}") {
-        let _ = Engine::<Page>::builder().template("t", src).compile();
+        let _ = Engine::<Page>::builder().template("t", src).build();
     }
 
     #[test]
@@ -165,8 +165,8 @@ proptest! {
         Just("{{ page.title | truncate(2) | replace(\"a\", \"b\") }}"), Just(r#"{% extends "t" %}"#), Just(r#"{% include "t" with page %}"#), Just("{% include \"t\" %}"),
     ], 0..30)) {
         let src: String = parts.concat();
-        if let Ok(t) = Engine::<Page>::builder().template("t", src).compile() {
-            let _ = t.render_to_string("t", &Page { title: "<x>".into() });
+        if let Ok(t) = Engine::<Page>::builder().template("t", src).build() {
+            let _ = t.render("t", &Page { title: "<x>".into() });
         }
     }
 }
@@ -225,9 +225,7 @@ fn render_script(src: &str, v: &str) -> String {
         .template("t", src)
         .build()
         .unwrap();
-    engine
-        .render_to_string("t", &Script { v: v.to_owned() })
-        .unwrap()
+    engine.render("t", &Script { v: v.to_owned() }).unwrap()
 }
 
 proptest! {
@@ -290,13 +288,13 @@ proptest! {
     fn application_filter_output_is_escaped(s in nasty()) {
         let engine = Engine::<Page>::builder()
             .filter("echo", &[luminess::Kind::Text], luminess::Kind::Text, |_, args| match args {
-                [luminess::Value::Text(t)] => luminess::Computed::Text((*t).to_owned()),
+                [luminess::Value::Text(t)] => luminess::Answer::Text((*t).to_owned()),
                 _ => luminess::Value::Absent.into(),
             })
             .template("t", "<p>{{ page.title | echo(page.title) }}</p>")
             .build()
             .unwrap();
-        let out = engine.render_to_string("t", &Page { title: s.clone() }).unwrap();
+        let out = engine.render("t", &Page { title: s.clone() }).unwrap();
         let inner = &out[3..out.len() - 4];
         prop_assert!(!inner.contains('<'));
         prop_assert_eq!(unescape_html(inner), s);
@@ -308,7 +306,7 @@ proptest! {
         luminess::view!(V as "v" { s: text, x: int });
         let src = format!("{{{{ v.s | truncate({n}) | raw }}}}|{{{{ v.x | number }}}}");
         let engine = Engine::<V>::builder().template("t", src).build().unwrap();
-        let out = engine.render_to_string("t", &V { s: s.clone(), x }).unwrap();
+        let out = engine.render("t", &V { s: s.clone(), x }).unwrap();
         let (cut, num) = out.rsplit_once('|').unwrap();
         if s.chars().count() <= n {
             prop_assert_eq!(cut, s.as_str());

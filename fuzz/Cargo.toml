@@ -16,7 +16,7 @@ path = ".."
 # The release `same_output` compares against, byte for byte.
 [dependencies.luminess_base]
 package = "luminess"
-version = "=0.9.2"
+version = "=0.9.3"
 
 # Keeps this crate out of any parent workspace.
 [workspace]

@@ -3,7 +3,7 @@
 
 use std::fmt::Write as _;
 
-use luminess::{Engine, Failed, FieldId, Kind, Output, Schema, Shaped, ToValue, Value, View};
+use luminess::{BlockError, Engine, HasSchema, Kind, Output, Schema, ToValue, Value, View};
 
 struct Author {
     name: String,
@@ -46,21 +46,21 @@ luminess::view!(Page as "page" {
     gallery: object(Gallery),
 });
 
-impl Shaped for Gallery {
+impl HasSchema for Gallery {
     fn schema() -> Schema {
         Schema::build("gallery").int("count").renders().finish()
     }
 }
 
 impl View for Gallery {
-    fn field(&self, id: FieldId) -> Value<'_> {
-        match id.index() {
+    fn field(&self, index: usize) -> Value<'_> {
+        match index {
             0 => Value::Int(self.images.len() as i64),
             _ => Value::Absent,
         }
     }
 
-    fn render(&self, out: &mut Output<'_>) -> Result<(), Failed> {
+    fn render(&self, out: &mut Output<'_>) -> Result<(), BlockError> {
         out.markup("<div class=\"gallery\">");
         for img in &self.images {
             out.markup("<img src=\"");
@@ -68,7 +68,7 @@ impl View for Gallery {
             out.markup("\">");
         }
         if self.broken {
-            return Err(Failed::new("image service down"));
+            return Err(BlockError::new("image service down"));
         }
         out.markup("</div>");
         Ok(())
@@ -78,9 +78,9 @@ impl View for Gallery {
         let _ = write!(out, "{} images unavailable", self.images.len());
     }
 
-    fn text(&self, out: &mut String) -> Result<(), Failed> {
+    fn text(&self, out: &mut String) -> Result<(), BlockError> {
         if self.broken {
-            return Err(Failed::new("image service down"));
+            return Err(BlockError::new("image service down"));
         }
         let _ = write!(out, "{} images & more", self.images.len());
         Ok(())
@@ -132,7 +132,7 @@ fn render_with(src: &str, p: &Page) -> String {
         .template("t", src)
         .build()
         .unwrap_or_else(|e| panic!("{e}"));
-    engine.render_to_string("t", p).unwrap()
+    engine.render("t", p).unwrap()
 }
 
 fn compile_error(src: &str) -> String {
@@ -294,24 +294,24 @@ fn failing_blocks_fall_back() {
         .build()
         .unwrap();
     let mut out = Vec::new();
-    let r = engine.render("a", &p, &mut out).unwrap();
+    let r = engine.render_into("a", &p, &mut out).unwrap();
     assert_eq!(
         String::from_utf8(out).unwrap(),
         "<main>1 images unavailable</main>"
     );
     assert_eq!(r.fallbacks(), 1);
-    assert!(!r.is_complete());
+    assert!(!r.failures().is_empty());
     assert_eq!(
-        r.first_failure().map(Failed::reason),
+        r.failures().first().map(BlockError::reason),
         Some("image service down")
     );
     assert_eq!(
-        engine.render_to_string("b", &p).unwrap(),
+        engine.render("b", &p).unwrap(),
         "<main><p>Later.</p></main>"
     );
     p.gallery.broken = false;
     assert_eq!(
-        engine.render_to_string("b", &p).unwrap(),
+        engine.render("b", &p).unwrap(),
         "<main><h2>Pictures</h2><div class=\"gallery\"><img src=\"/a.png\"></div></main>"
     );
 }
@@ -322,7 +322,7 @@ fn includes() {
         .template("nav", "<nav>{{ page.author.name }}</nav>")
         .template("item", "<li>{{ p.title }}</li>")
         .template("home", "{% include \"nav\" %}<ul>{% for p in page.posts %}{% include \"item\" %}{% endfor %}</ul>")
-        .template_with("item", "x", Schema::build("p").text("title").finish());
+        .template_with_schema("item", "x", Schema::build("p").text("title").finish());
     // Two templates named `item`.
     assert!(
         engine
@@ -335,11 +335,11 @@ fn includes() {
     let engine = Engine::<Page>::builder()
         .template("nav", "<nav>{{ page.author.name }}</nav>")
         .template("home", "{% include \"nav\" %}<ul>{% for p in page.posts %}{% include \"item\" %}{% endfor %}</ul>")
-        .template_with("item", "<li>{{ p.title }}</li>", Schema::build("p").text("title").finish())
+        .template_with_schema("item", "<li>{{ p.title }}</li>", Schema::build("p").text("title").finish())
         .build()
         .unwrap();
     assert_eq!(
-        engine.render_to_string("home", &page()).unwrap(),
+        engine.render("home", &page()).unwrap(),
         "<nav>Ann O&#39;Neil</nav><ul><li>First</li><li>Second</li></ul>"
     );
 }
@@ -464,25 +464,29 @@ fn branches_that_join() {
 }
 
 #[test]
-fn reload_and_snapshots() {
+fn reload_replaces_the_set_for_every_clone() {
     let engine = Engine::<Page>::builder()
         .template("t", "one")
         .build()
         .unwrap();
-    let old = engine.templates();
-    engine
-        .reload(Engine::<Page>::builder().template("t", "two"))
+    let clone = engine.clone();
+    assert_eq!(clone.render("t", &page()).unwrap(), "one");
+    let next = Engine::<Page>::builder()
+        .template("t", "two")
+        .build()
         .unwrap();
-    assert_eq!(old.render_to_string("t", &page()).unwrap(), "one");
-    assert_eq!(engine.render_to_string("t", &page()).unwrap(), "two");
-    assert!(
-        engine
-            .reload(Engine::<Page>::builder().template("t", "{{ x }}"))
-            .is_err()
-    );
-    assert_eq!(engine.render_to_string("t", &page()).unwrap(), "two");
-    let e = engine.render_to_string("missing", &page()).unwrap_err();
-    assert_eq!(e.kind(), luminess::RenderErrorKind::NotFound);
+    assert!(next.contains("t"));
+    assert!(!next.contains("u"));
+    engine.replace(next.clone());
+    assert_eq!(clone.render("t", &page()).unwrap(), "two");
+    assert_eq!(engine.render("t", &page()).unwrap(), "two");
+    // The engine swapped in keeps working on its own.
+    assert_eq!(next.render("t", &page()).unwrap(), "two");
+    // Replacing with itself changes nothing.
+    engine.replace(engine.clone());
+    assert_eq!(engine.render("t", &page()).unwrap(), "two");
+    let e = engine.render("missing", &page()).unwrap_err();
+    assert_eq!(e.kind(), luminess::ErrorKind::NotFound);
     assert_eq!(e.to_string(), "no template named `missing`");
 }
 
@@ -498,7 +502,7 @@ fn engines_cross_threads() {
             std::thread::spawn(move || {
                 let p = page();
                 for _ in 0..100 {
-                    assert_eq!(e.render_to_string("t", &p).unwrap(), "1234");
+                    assert_eq!(e.render("t", &p).unwrap(), "1234");
                 }
             })
         })
@@ -513,25 +517,20 @@ fn runtime_schemas() {
     // A content type declared at startup rather than in Rust types.
     struct Doc(Vec<String>);
     impl View for Doc {
-        fn field(&self, id: FieldId) -> Value<'_> {
-            self.0
-                .get(id.index())
-                .map_or(Value::Absent, |s| Value::Text(s))
+        fn field(&self, index: usize) -> Value<'_> {
+            self.0.get(index).map_or(Value::Absent, |s| Value::Text(s))
         }
     }
     let schema = Schema::build("doc").text("summary").text("sku").finish();
-    let engine = Engine::<Doc>::builder_with(schema.clone())
+    let engine = Engine::<Doc>::with_schema(schema.clone())
         .template("product", "{{ doc.summary }} ({{ doc.sku }})")
         .build()
         .unwrap();
     let d = Doc(vec!["Shoes".into(), "S-1".into()]);
-    assert_eq!(
-        engine.render_to_string("product", &d).unwrap(),
-        "Shoes (S-1)"
-    );
+    assert_eq!(engine.render("product", &d).unwrap(), "Shoes (S-1)");
     let lists = Schema::build("doc").list("tags", Kind::Text).finish();
     assert!(
-        Engine::<Doc>::builder_with(lists)
+        Engine::<Doc>::with_schema(lists)
             .template("x", "{{ doc.tags }}")
             .build()
             .is_err()
@@ -545,7 +544,7 @@ fn render_appends() {
         .build()
         .unwrap();
     let mut out = b"a".to_vec();
-    let r = engine.render("t", &page(), &mut out).unwrap();
+    let r = engine.render_into("t", &page(), &mut out).unwrap();
     assert_eq!(out, b"ab");
     assert_eq!(r.bytes(), 1);
 }
@@ -609,7 +608,7 @@ fn styles() {
         font: "Open Sans".into(),
     };
     assert_eq!(
-        engine.render_to_string("css", &ok).unwrap(),
+        engine.render("css", &ok).unwrap(),
         r"<style>a { color: #ff0000; font-family: 'Open\20 Sans'; }</style>"
     );
     let bad = Theme {
@@ -617,11 +616,11 @@ fn styles() {
         font: "a'}</style>".into(),
     };
     assert_eq!(
-        engine.render_to_string("css", &bad).unwrap(),
+        engine.render("css", &bad).unwrap(),
         r"<style>a { color: blocked; font-family: 'a\27 \7d \3c \2f style\3e '; }</style>"
     );
     assert_eq!(
-        engine.render_to_string("attr", &bad).unwrap(),
+        engine.render("attr", &bad).unwrap(),
         "<p style=\"color: blocked\">"
     );
 }
@@ -643,24 +642,21 @@ fn block_fallback_text_and_text_forms() {
         .build()
         .unwrap();
     assert_eq!(
-        engine.render_to_string("attr", &p).unwrap(),
+        engine.render("attr", &p).unwrap(),
         r#"<div title="1 images &amp; more" data-n='1 images &amp; more'>"#
     );
     assert_eq!(
-        engine.render_to_string("js", &p).unwrap(),
+        engine.render("js", &p).unwrap(),
         r#"<script>var g = "1 images \u0026 more";</script>"#
     );
     p.gallery.broken = true;
+    assert_eq!(engine.render("f", &p).unwrap(), "No pictures &lt;now&gt;");
     assert_eq!(
-        engine.render_to_string("f", &p).unwrap(),
-        "No pictures &lt;now&gt;"
-    );
-    assert_eq!(
-        engine.render_to_string("attr", &p).unwrap(),
+        engine.render("attr", &p).unwrap(),
         r#"<div title="" data-n='none'>"#
     );
     let mut out = Vec::new();
-    let r = engine.render("many", &p, &mut out).unwrap();
+    let r = engine.render_into("many", &p, &mut out).unwrap();
     assert_eq!(r.fallbacks(), 2);
     assert_eq!(r.failures().len(), 2);
     assert!(

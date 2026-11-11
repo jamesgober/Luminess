@@ -6,7 +6,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-use luminess::{Engine, Failed, FieldId, Output, Schema, Shaped, ToValue, Value, View};
+use luminess::{BlockError, Engine, HasSchema, Output, Schema, ToValue, Value, View};
 
 struct Page {
     n: i64,
@@ -26,15 +26,18 @@ fn reloads_reach_threads_that_rendered_before() {
     let worker = std::thread::spawn(move || {
         let p = Page { n: 1 };
         // Fill this thread's cache with the old set.
-        assert_eq!(e.render_to_string("t", &p).unwrap(), "old 1");
+        assert_eq!(e.render("t", &p).unwrap(), "old 1");
         let _ = a.wait();
         let _ = b.wait();
-        e.render_to_string("t", &p).unwrap()
+        e.render("t", &p).unwrap()
     });
     let _ = rendered.wait();
-    engine
-        .reload(Engine::<Page>::builder().template("t", "new {{ page.n }}"))
-        .unwrap();
+    engine.replace(
+        Engine::<Page>::builder()
+            .template("t", "new {{ page.n }}")
+            .build()
+            .unwrap(),
+    );
     let _ = reloaded.wait();
     assert_eq!(worker.join().unwrap(), "new 1");
 }
@@ -54,7 +57,7 @@ fn many_engines_on_one_thread() {
     for round in 0..3 {
         for (i, e) in engines.iter().enumerate() {
             assert_eq!(
-                e.render_to_string("t", &Page { n: round }).unwrap(),
+                e.render("t", &Page { n: round }).unwrap(),
                 format!("{i}:{round}")
             );
         }
@@ -67,23 +70,23 @@ struct Card {
     hits: Arc<AtomicBool>,
 }
 
-impl Shaped for Card {
+impl HasSchema for Card {
     fn schema() -> Schema {
         Schema::build("card").renders().finish()
     }
 }
 
 impl View for Card {
-    fn field(&self, _: FieldId) -> Value<'_> {
+    fn field(&self, _: usize) -> Value<'_> {
         Value::Absent
     }
 
-    fn render(&self, out: &mut Output<'_>) -> Result<(), Failed> {
+    fn render(&self, out: &mut Output<'_>) -> Result<(), BlockError> {
         self.hits.store(true, Ordering::Relaxed);
         let s = self
             .inner
-            .render_to_string("inner", &Page { n: 7 })
-            .map_err(|e| Failed::new(e.to_string()))?;
+            .render("inner", &Page { n: 7 })
+            .map_err(|e| BlockError::new(e.to_string()))?;
         out.markup(&s);
         Ok(())
     }
@@ -118,7 +121,7 @@ fn a_block_can_render_through_another_engine() {
         },
     };
     for _ in 0..3 {
-        assert_eq!(outer.render_to_string("o", &v).unwrap(), "<b><i>7</i></b>");
+        assert_eq!(outer.render("o", &v).unwrap(), "<b><i>7</i></b>");
     }
     assert!(hits.load(Ordering::Relaxed));
 }

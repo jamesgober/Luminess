@@ -4,7 +4,7 @@
 
 use std::time::{Duration, Instant};
 
-use luminess::{Engine, RenderErrorKind, Schema};
+use luminess::{Engine, ErrorKind, Schema};
 
 struct P {
     v: String,
@@ -24,7 +24,7 @@ fn engine(tpl: &str) -> Result<Engine<P>, String> {
 
 fn render(tpl: &str, v: &str, w: &str) -> Result<String, String> {
     let e = engine(tpl)?;
-    e.render_to_string(
+    e.render(
         "t",
         &P {
             v: v.into(),
@@ -113,39 +113,35 @@ fn url_common_forms_are_unchanged() {
         .build()
         .unwrap();
     assert_eq!(
-        e.render_to_string("abs", &page("a b", "example.com"))
-            .unwrap(),
+        e.render("abs", &page("a b", "example.com")).unwrap(),
         r#"<a href="https://example.com/x/a%20b">x</a>"#
     );
     assert_eq!(
-        e.render_to_string("mail", &page("me@example.com", ""))
-            .unwrap(),
+        e.render("mail", &page("me@example.com", "")).unwrap(),
         r#"<a href="mailto:me@example.com">x</a>"#
     );
     assert_eq!(
-        e.render_to_string("base", &page("y", "https://example.com"))
-            .unwrap(),
+        e.render("base", &page("y", "https://example.com")).unwrap(),
         r#"<a href="https://example.com/y">x</a>"#
     );
     assert_eq!(
-        e.render_to_string("rel", &page("a", "b")).unwrap(),
+        e.render("rel", &page("a", "b")).unwrap(),
         r#"<a href="/x/a:b">x</a>"#
     );
     assert_eq!(
-        e.render_to_string("query", &page("a&b", "")).unwrap(),
+        e.render("query", &page("a&b", "")).unwrap(),
         r#"<a href="?q=a%26b">x</a>"#
     );
     assert_eq!(
-        e.render_to_string("maybe", &page("", "1")).unwrap(),
+        e.render("maybe", &page("", "1")).unwrap(),
         r#"<a href="?q=1">x</a>"#
     );
     assert_eq!(
-        e.render_to_string("one", &page("https://example.com/a", ""))
-            .unwrap(),
+        e.render("one", &page("https://example.com/a", "")).unwrap(),
         r#"<a href="https://example.com/a">x</a>"#
     );
     assert_eq!(
-        e.render_to_string("one", &page(JS, "")).unwrap(),
+        e.render("one", &page(JS, "")).unwrap(),
         r##"<a href="#blocked">x</a>"##
     );
 }
@@ -343,12 +339,12 @@ fn many_literal_pieces_compile_in_linear_time() {
 fn a_template_with_another_schema_is_not_rendered_with_the_wrong_view() {
     let other = Schema::build("x").text("title").finish();
     let e = Engine::<P>::builder()
-        .template_with("card", "<h1>{{ x.title }}</h1>", other)
+        .template_with_schema("card", "<h1>{{ x.title }}</h1>", other)
         .template("t", "ok")
         .build()
         .unwrap();
     let err = e
-        .render_to_string(
+        .render(
             "card",
             &P {
                 v: "secret".into(),
@@ -356,16 +352,16 @@ fn a_template_with_another_schema_is_not_rendered_with_the_wrong_view() {
             },
         )
         .unwrap_err();
-    assert_eq!(err.kind(), RenderErrorKind::NotFound);
+    assert_eq!(err.kind(), ErrorKind::NotFound);
 
     // A schema the view does answer (a prefix of it) renders by name.
     let prefix = Schema::build("p").text("v").finish();
     let e = Engine::<P>::builder()
-        .template_with("short", "<b>{{ p.v }}</b>", prefix)
+        .template_with_schema("short", "<b>{{ p.v }}</b>", prefix)
         .build()
         .unwrap();
     assert_eq!(
-        e.render_to_string(
+        e.render(
             "short",
             &P {
                 v: "a".into(),

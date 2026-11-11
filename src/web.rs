@@ -5,7 +5,8 @@
 //! handler's `&V` straight to the compiled templates, and nothing is
 //! converted. Template names are resolved when the application is built, so
 //! a route naming a template the theme does not have stops it from
-//! starting. The ids web-net keeps stay valid across [`Engine::reload`].
+//! starting. The ids web-net keeps stay valid across [`Engine::replace`] and
+//! [`Engine::reload_dir`].
 //!
 //! ```
 //! use luminess::{Engine, web::{ErrorView, Theme}};
@@ -34,7 +35,7 @@
 
 use web_net::{ErrorPage, Output, Render, TemplateId};
 
-use crate::{Engine, RenderErrorKind, View};
+use crate::{Engine, ErrorKind, View};
 
 /// The values an error page template reads, as `error`: `status`, `title`,
 /// `message`, and `reference` (what the visitor quotes to support).
@@ -63,10 +64,11 @@ impl ErrorView {
     }
 }
 
-fn convert(e: &crate::RenderError) -> web_net::RenderError {
+fn convert(e: &crate::Error) -> web_net::RenderError {
     let code = match e.kind() {
-        RenderErrorKind::NotFound => "luminess.not_found",
-        RenderErrorKind::TooLarge => "luminess.too_large",
+        ErrorKind::NotFound => "luminess.not_found",
+        ErrorKind::TooLarge => "luminess.too_large",
+        _ => "luminess.render",
     };
     web_net::RenderError::new(code).with_detail(e.to_string())
 }
@@ -161,9 +163,9 @@ impl<V: View + 'static> Render for Theme<V> {
         let buf = out.buffer();
         let start = buf.len();
         for name in [format!("error/{}", page.status), "error".to_owned()] {
-            match errors.render(&name, &view, buf) {
+            match errors.render_into(&name, &view, buf) {
                 Ok(_) => return Ok(true),
-                Err(e) if e.kind() == RenderErrorKind::NotFound => {}
+                Err(e) if e.kind() == ErrorKind::NotFound => {}
                 Err(e) => {
                     buf.truncate(start);
                     return Err(convert(&e));

@@ -40,7 +40,7 @@ fn page() -> Page {
     }
 }
 
-fn build(templates: &[(&str, &str)]) -> Result<Engine<Page>, luminess::CompileError> {
+fn build(templates: &[(&str, &str)]) -> Result<Engine<Page>, luminess::Error> {
     let mut b = Engine::<Page>::builder();
     for (n, s) in templates {
         b = b.template(*n, *s);
@@ -50,7 +50,7 @@ fn build(templates: &[(&str, &str)]) -> Result<Engine<Page>, luminess::CompileEr
 
 fn render(templates: &[(&str, &str)], name: &str) -> String {
     let e = build(templates).unwrap_or_else(|e| panic!("{e}"));
-    e.render_to_string(name, &page()).unwrap()
+    e.render(name, &page()).unwrap()
 }
 
 fn error(templates: &[(&str, &str)]) -> String {
@@ -193,7 +193,7 @@ fn include_with_gives_a_partial_its_own_root() {
             "list",
             r#"{% for p in page.posts %}{% include "card" with p %}{% endfor %}"#,
         )
-        .template_with(
+        .template_with_schema(
             "card",
             r#"<b title="{{ post.author.name }}">{{ post.title }}</b>"#,
             card,
@@ -201,7 +201,7 @@ fn include_with_gives_a_partial_its_own_root() {
         .build()
         .unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(
-        engine.render_to_string("list", &page()).unwrap(),
+        engine.render("list", &page()).unwrap(),
         r#"<b title="Ann">One</b><b title="Bo">Two &amp; more</b>"#
     );
 
@@ -211,7 +211,7 @@ fn include_with_gives_a_partial_its_own_root() {
             "list",
             r#"{% for p in page.posts %}{% include "card" with p.author %}{% endfor %}"#,
         )
-        .template_with(
+        .template_with_schema(
             "card",
             "{{ post.title }}",
             Schema::build("post").text("title").finish(),
@@ -242,24 +242,24 @@ fn templates_from_a_folder() {
     .unwrap();
     std::fs::write(dir.join("notes.txt"), "ignored").unwrap();
     let engine = Engine::<Page>::builder()
-        .directory(&dir, "html")
+        .directory(&dir)
         .unwrap()
         .build()
         .unwrap_or_else(|e| panic!("{e}"));
-    let mut names: Vec<&str> = Vec::new();
-    let t = engine.templates();
-    names.extend(t.names());
-    names.sort_unstable();
-    assert_eq!(names, ["base", "home", "partials/nav"]);
+    // Named by path without the extension; notes.txt is not a template.
+    for name in ["base", "home", "partials/nav"] {
+        assert!(engine.render(name, &page()).is_ok(), "{name}");
+    }
+    assert!(engine.render("notes", &page()).is_err());
     assert!(
         engine
-            .render_to_string("home", &page())
+            .render("home", &page())
             .unwrap()
             .contains("<nav>News</nav>")
     );
     assert!(
         Engine::<Page>::builder()
-            .directory(dir.join("missing"), "html")
+            .directory(dir.join("missing"))
             .is_err()
     );
     let _ = std::fs::remove_dir_all(&dir);

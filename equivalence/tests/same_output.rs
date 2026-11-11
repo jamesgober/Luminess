@@ -196,7 +196,7 @@ fn compare(src: &str, p: &Page, exact: bool) -> Result<(), TestCaseError> {
     let now = luminess::Engine::<Page>::builder()
         .template("t", src)
         .template("part", "<b>{{ page.title }}</b>")
-        .compile();
+        .build();
     let base = luminess_base::Engine::<Page>::builder()
         .template("t", src)
         .template("part", "<b>{{ page.title }}</b>")
@@ -204,7 +204,7 @@ fn compare(src: &str, p: &Page, exact: bool) -> Result<(), TestCaseError> {
     match (now, base) {
         (Ok(now), Ok(base)) => {
             let _ = COMPILED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let a = now.render_to_string("t", p).unwrap();
+            let a = now.render("t", p).unwrap();
             let b = base.render_to_string("t", p).unwrap();
             if exact || a == b {
                 prop_assert_eq!(a, b, "template: {:?}", src);
@@ -220,7 +220,7 @@ fn compare(src: &str, p: &Page, exact: bool) -> Result<(), TestCaseError> {
             }
         }
         (Ok(now), Err(_)) if !exact && changed_on_purpose(src) => {
-            let a = now.render_to_string("t", p).unwrap();
+            let a = now.render("t", p).unwrap();
             prop_assert!(no_script_urls(&a), "template: {:?}: {}", src, a);
         }
         (Err(_), Ok(_)) if !exact && changed_on_purpose(src) => {}
@@ -271,7 +271,7 @@ proptest! {
 
     #[test]
     fn structured_templates_render_the_same(src in template(), p in page()) {
-        let compiles = luminess::Engine::<Page>::builder().template("t", src.as_str()).compile();
+        let compiles = luminess::Engine::<Page>::builder().template("t", src.as_str()).build();
         prop_assert!(compiles.is_ok(), "{:?}: {}", src, compiles.err().map(|e| e.to_string()).unwrap_or_default());
         same(&src, &p)?;
     }
@@ -310,7 +310,7 @@ fn compile_rate() {
         if luminess::Engine::<Page>::builder()
             .template("t", parts.concat())
             .template("part", "")
-            .compile()
+            .build()
             .is_ok()
         {
             ok += 1;

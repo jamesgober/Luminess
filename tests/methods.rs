@@ -1,7 +1,7 @@
 //! Methods with arguments, `set`, the built-in filters added in 0.6, and
 //! application filters.
 
-use luminess::{Computed, Engine, FieldId, Kind, Schema, Shaped, ToValue, Value, View};
+use luminess::{Answer, Engine, HasSchema, Kind, Schema, ToValue, Value, View};
 
 /// A shop product's variations: a custom block type with its own methods.
 struct Variations {
@@ -9,7 +9,7 @@ struct Variations {
     prices: Vec<i64>,
 }
 
-impl Shaped for Variations {
+impl HasSchema for Variations {
     fn schema() -> Schema {
         Schema::build("variations")
             .int("count")
@@ -21,18 +21,18 @@ impl Shaped for Variations {
 }
 
 impl View for Variations {
-    fn field(&self, id: FieldId) -> Value<'_> {
-        match id.index() {
+    fn field(&self, index: usize) -> Value<'_> {
+        match index {
             0 => Value::Int(self.sizes.len() as i64),
             _ => Value::Absent,
         }
     }
 
-    fn call<'s>(&'s self, id: FieldId, args: &[Value<'_>]) -> Computed<'s> {
-        match (id.index(), args) {
+    fn call<'s>(&'s self, index: usize, args: &[Value<'_>]) -> Answer<'s> {
+        match (index, args) {
             (1, []) => Value::Int(self.prices.iter().copied().min().unwrap_or(0)).into(),
             (2, [Value::Text("size")]) => Value::List(&self.sizes).into(),
-            (3, [Value::Text(prefix), Value::Int(n)]) => Computed::Text(format!("{prefix} #{n}")),
+            (3, [Value::Text(prefix), Value::Int(n)]) => Answer::Text(format!("{prefix} #{n}")),
             _ => Value::Absent.into(),
         }
     }
@@ -78,7 +78,7 @@ fn render(src: &str) -> String {
         .template("t", src)
         .build()
         .unwrap_or_else(|e| panic!("{e}"));
-    e.render_to_string("t", &product()).unwrap()
+    e.render("t", &product()).unwrap()
 }
 
 fn error(src: &str) -> String {
@@ -232,7 +232,7 @@ fn dates_across_eras() {
         (-86_400, "1969-12-31 00:00:00"),
         (4_102_444_799, "2099-12-31 23:59:59"),
     ] {
-        assert_eq!(e.render_to_string("d", &T { at: secs }).unwrap(), want);
+        assert_eq!(e.render("d", &T { at: secs }).unwrap(), want);
     }
 }
 
@@ -243,10 +243,10 @@ fn application_filters() {
             let (Value::Int(c), [Value::Text(cur)]) = (v, args) else {
                 return Value::Absent.into();
             };
-            Computed::Text(format!("{}.{:02} {cur}", c / 100, c % 100))
+            Answer::Text(format!("{}.{:02} {cur}", c / 100, c % 100))
         })
         .filter("shout", &[], Kind::Text, |v, _| match v {
-            Value::Text(s) => Computed::Text(format!("{s}!")),
+            Value::Text(s) => Answer::Text(format!("{s}!")),
             other => other.into(),
         })
         .template(
@@ -256,7 +256,7 @@ fn application_filters() {
         .build()
         .unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(
-        engine.render_to_string("t", &product()).unwrap(),
+        engine.render("t", &product()).unwrap(),
         "49.00 EUR TRAIL &lt;SHOE&gt; RUNNER!"
     );
 

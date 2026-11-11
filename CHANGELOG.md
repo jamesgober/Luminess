@@ -6,6 +6,101 @@ All notable changes to `luminess` are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-11-11
+
+A simpler API. Breaking: every change is listed under "Migrating from 0.9"
+below. Template syntax, escaping, and output are unchanged byte for byte,
+and rendering is as fast as in 0.9.3.
+
+### Added
+
+- `Engine::from_dir(dir)`: a whole theme in one call, every `.html` file
+  below `dir`, named by its path without the extension.
+- `Engine::reload_dir(dir)`: compile the folder again and swap it in; on any
+  error the running theme stays.
+- `Template<V>`: one compiled template (`Template::new(source)`,
+  `render(&view)`, `render_into(&view, &mut out)`) for cards, emails, and
+  fragments.
+- `luminess::render(source, &view)`: compile and render in one call, for
+  scripts and tests.
+- `Engine::replace(engine)` and `Engine::contains(name)`: build and check a
+  new theme fully, then swap it in.
+- `Builder::directory_with_extension(dir, extension)`.
+- `ErrorKind::Io`: a theme folder or file that cannot be read.
+- `docs/API.md` rewritten: every public item with its parameters, errors,
+  and examples, simplest first; every example runs as a doctest.
+
+### Changed
+
+- One error type, `Error`, for loading, compiling, and rendering, so `?`
+  works from `from_dir` to `render`. `Error::kind()` says which
+  (`ErrorKind` is `#[non_exhaustive]`); `diagnostics()`, `report()`, and
+  `to_html()` are on it for every kind.
+- `Engine::render` returns the page as a `String`, the common case;
+  `render_into` appends to a buffer you keep.
+- Views take a field's position as a plain `usize` instead of `FieldId`.
+- Renamed: `Shaped` to `HasSchema`, `Computed` to `Answer`, `Failed` to
+  `BlockError`, `template_with` to `template_with_schema`, `builder_with`
+  to `with_schema`.
+- `SchemaBuilder::object` and `Kind::Object` take a `Schema`;
+  `Kind::object_of::<T>()` still builds a type's schema the first time it
+  is needed, so types can refer to themselves.
+- The equivalence tests and the `same_output` fuzz target compare against
+  0.9.3.
+
+### Removed
+
+- `Templates`, `Engine::new`, `Engine::templates`, `Engine::swap`,
+  `Engine::reload`, `Builder::new`, `Builder::compile`: an `Engine` is the
+  compiled set, and `replace` swaps one in.
+- `CompileError`, `RenderError`, `RenderErrorKind`, `FieldId`, `SchemaRef`.
+- `Rendered::is_complete` and `Rendered::first_failure`: use `failures()`.
+
+### Migrating from 0.9
+
+| 0.9 | 0.10 |
+|---|---|
+| `Engine::<V>::builder().directory(dir, "html")?.build()?` | `Engine::<V>::from_dir(dir)?` |
+| `Builder::directory(dir, "html")` (an `io::Error`) | `Builder::directory(dir)` (a `luminess::Error`) |
+| `Builder::directory(dir, "txt")` | `Builder::directory_with_extension(dir, "txt")` |
+| `engine.render(name, &view, &mut out)` | `engine.render_into(name, &view, &mut out)` |
+| `engine.render_to_string(name, &view)` | `engine.render(name, &view)` |
+| `engine.reload(builder)` | `engine.replace(builder.build()?)`, or `engine.reload_dir(dir)` |
+| `builder.compile()` and `Engine::new(templates)` | `builder.build()` |
+| `engine.templates()`, `Templates`, `engine.swap(templates)` | an `Engine` is the set: `engine.replace(other)`, `engine.contains(name)` |
+| `Builder::new(schema)`, `Engine::builder_with(schema)` | `Engine::with_schema(schema)` |
+| `Builder::template_with(name, source, schema)` | `Builder::template_with_schema(name, source, schema)` |
+| `CompileError`, `RenderError`, `RenderErrorKind` | `Error` and `ErrorKind` (`Compile`, `Io`, `NotFound`, `TooLarge`) |
+| `RenderError::template()`, `CompileError::diagnostics()` | `Error::template()`, `Error::diagnostics()` |
+| `Shaped` | `HasSchema` |
+| `Computed` (`Computed::Value`, `Computed::Text`) | `Answer` (`Answer::Value`, `Answer::Text`) |
+| `Failed` | `BlockError` |
+| `fn field(&self, id: FieldId)` with `match id.index()` | `fn field(&self, index: usize)` with `match index` |
+| `fn call(&self, id: FieldId, args)` | `fn call(&self, index: usize, args)` |
+| `Schema::field(name) -> Option<(FieldId, &Kind)>` | `Schema::field(name) -> Option<(usize, &Kind)>` |
+| `SchemaRef`, `SchemaBuilder::object(name, impl Into<SchemaRef>)` | `SchemaBuilder::object(name, Schema)`; `Kind::Object(Schema)` |
+| `Rendered::is_complete()` | `rendered.failures().is_empty()` |
+| `Rendered::first_failure()` | `rendered.failures().first()` |
+
+A view written by hand, before and after:
+
+```rust
+// 0.9
+impl View for Post {
+    fn field(&self, id: FieldId) -> Value<'_> {
+        match id.index() { 0 => Value::Text(&self.title), _ => Value::Absent }
+    }
+}
+// 0.10
+impl View for Post {
+    fn field(&self, index: usize) -> Value<'_> {
+        match index { 0 => Value::Text(&self.title), _ => Value::Absent }
+    }
+}
+```
+
+Views made with `view!` need no change.
+
 ## [0.9.3] - 2026-11-11
 
 A security release, and faster rendering. Upgrade from any earlier 0.9 or

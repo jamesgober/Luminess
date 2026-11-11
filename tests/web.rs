@@ -65,14 +65,14 @@ fn ids_survive_reloads() {
     let a = engine.template("a").unwrap();
     let b = engine.template("b").unwrap();
     // A new theme with the templates in another order, and a new one.
-    engine
-        .reload(
-            Engine::<Page>::builder()
-                .template("c", "C")
-                .template("b", "B2")
-                .template("a", "A2"),
-        )
-        .unwrap();
+    engine.replace(
+        Engine::<Page>::builder()
+            .template("c", "C")
+            .template("b", "B2")
+            .template("a", "A2")
+            .build()
+            .unwrap(),
+    );
     let mut buf = Vec::new();
     Render::render(&engine, a, &page(), &mut Output::new(&mut buf, 1 << 20)).unwrap();
     assert_eq!(buf, b"A2");
@@ -80,9 +80,12 @@ fn ids_survive_reloads() {
     Render::render(&engine, b, &page(), &mut Output::new(&mut buf, 1 << 20)).unwrap();
     assert_eq!(buf, b"B2");
     // A reload that drops a template: its id answers not_found.
-    engine
-        .reload(Engine::<Page>::builder().template("b", "B3"))
-        .unwrap();
+    engine.replace(
+        Engine::<Page>::builder()
+            .template("b", "B3")
+            .build()
+            .unwrap(),
+    );
     buf.clear();
     let err = Render::render(&engine, a, &page(), &mut Output::new(&mut buf, 1 << 20)).unwrap_err();
     assert_eq!(err.code(), "luminess.not_found");

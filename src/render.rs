@@ -5,9 +5,9 @@ use std::{borrow::Cow, fmt::Write as _, sync::Arc};
 use crate::{
     compile::{CExpr, CNode, Esc, Filt, LoopAttr, Program, Step},
     escape,
-    output::{Failed, Output},
+    output::{BlockError, Output},
     parse::CmpOp,
-    view::{Computed, FieldId, FilterFn, List, Value, View},
+    view::{Answer, FieldId, FilterFn, List, Value, View},
 };
 
 /// Writes an integer in decimal.
@@ -45,12 +45,29 @@ fn write_float(f: f64, out: &mut Vec<u8>, scratch: &mut String) {
     out.extend_from_slice(scratch.as_bytes());
 }
 
-/// What one render reports besides its output.
+/// What one render reports besides its output: how many bytes it wrote and
+/// which blocks fell back. From [`Engine::render_into`](crate::Engine::render_into)
+/// and [`Template::render_into`](crate::Template::render_into).
+///
+/// ```
+/// use luminess::Template;
+///
+/// struct Page { title: String }
+/// luminess::view!(Page as "page" { title: text });
+///
+/// let mut out = Vec::new();
+/// let report = Template::<Page>::new("<h1>{{ page.title }}</h1>")?
+///     .render_into(&Page { title: "Hi".into() }, &mut out)?;
+/// assert_eq!(report.bytes(), 11);
+/// assert_eq!(report.fallbacks(), 0);
+/// assert!(report.failures().is_empty());
+/// # Ok::<(), luminess::Error>(())
+/// ```
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Rendered {
     bytes: usize,
     fallbacks: u32,
-    failures: Vec<Failed>,
+    failures: Vec<BlockError>,
 }
 
 impl Rendered {
@@ -63,29 +80,18 @@ impl Rendered {
         self.bytes
     }
 
-    /// How many blocks failed and were replaced by their fallback.
+    /// How many blocks failed and were replaced by their fallback, counting
+    /// past [`Rendered::MAX_FAILURES`].
     #[must_use]
     pub fn fallbacks(&self) -> u32 {
         self.fallbacks
     }
 
-    /// The first block failure, for the log.
-    #[must_use]
-    pub fn first_failure(&self) -> Option<&Failed> {
-        self.failures.first()
-    }
-
     /// The block failures, in the order they happened: at most
-    /// [`Rendered::MAX_FAILURES`]; [`Rendered::fallbacks`] counts them all.
+    /// [`Rendered::MAX_FAILURES`]. Empty when every block rendered.
     #[must_use]
-    pub fn failures(&self) -> &[Failed] {
+    pub fn failures(&self) -> &[BlockError] {
         &self.failures
-    }
-
-    /// `true` when no block failed.
-    #[must_use]
-    pub fn is_complete(&self) -> bool {
-        self.fallbacks == 0
     }
 }
 
@@ -112,7 +118,7 @@ struct Run<'a, 'o> {
     out: &'o mut Vec<u8>,
     scratch: String,
     fallbacks: u32,
-    failures: Vec<Failed>,
+    failures: Vec<BlockError>,
     /// The output length past which the render stops: `start + limit`.
     end: usize,
     /// The limit was passed: stop.
@@ -608,7 +614,7 @@ impl<'a> Run<'a, '_> {
         for step in steps {
             let Step::Field(id) = step else { return None };
             v = match v {
-                Value::View(x) => x.field(*id),
+                Value::View(x) => x.field(id.index()),
                 _ => Value::Absent,
             };
         }
@@ -622,7 +628,7 @@ impl<'a> Run<'a, '_> {
                 return Val::V(Value::Absent);
             };
             v = match step {
-                Step::Field(id) => Val::V(x.field(*id)),
+                Step::Field(id) => Val::V(x.field(id.index())),
                 Step::Call(id, args) => self.call(x, *id, args),
             };
         }
@@ -632,9 +638,9 @@ impl<'a> Run<'a, '_> {
     fn call(&mut self, x: &'a dyn View, id: FieldId, args: &'a [CExpr]) -> Val<'a> {
         let vals: Vec<Val<'a>> = args.iter().map(|a| self.eval(a)).collect();
         let values: Vec<Value<'_>> = vals.iter().map(as_value).collect();
-        match x.call(id, &values) {
-            Computed::Value(v) => Val::V(v),
-            Computed::Text(s) => Val::Owned(s),
+        match x.call(id.index(), &values) {
+            Answer::Value(v) => Val::V(v),
+            Answer::Text(s) => Val::Owned(s),
         }
     }
 
@@ -644,12 +650,12 @@ impl<'a> Run<'a, '_> {
         let f = &self.filters[i];
         match v {
             Val::V(value) => match f.apply(value, &values) {
-                Computed::Value(v) => Val::V(v),
-                Computed::Text(s) => Val::Owned(s),
+                Answer::Value(v) => Val::V(v),
+                Answer::Text(s) => Val::Owned(s),
             },
             Val::Owned(s) => match f.apply(Value::Text(&s), &values) {
-                Computed::Value(v) => detach(v),
-                Computed::Text(t) => Val::Owned(t),
+                Answer::Value(v) => detach(v),
+                Answer::Text(t) => Val::Owned(t),
             },
         }
     }
@@ -714,7 +720,7 @@ impl<'a> Run<'a, '_> {
         };
         for id in ids {
             v = match v {
-                Value::View(x) => x.field(*id),
+                Value::View(x) => x.field(id.index()),
                 _ => Value::Absent,
             };
         }
