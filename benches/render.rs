@@ -160,6 +160,26 @@ fn main() {
         let _ = black_box(small.render_into("t", black_box(&p), &mut out));
     });
 
+    // Per related post: one text comparison, or one read of a `set` value.
+    let loops = Engine::<Page>::builder()
+        .template("plain", "{% for r in page.related %}<li>{{ r.title }}</li>{% endfor %}")
+        .template(
+            "compare",
+            "{% for r in page.related %}{% if r.date == \"2026-01-01\" %}<li>{{ r.title }}</li>{% endif %}{% endfor %}",
+        )
+        .template(
+            "set",
+            "{% set u = page.title | upper %}{% for r in page.related %}<li>{{ u }}</li>{% endfor %}",
+        )
+        .build()
+        .expect("compiles");
+    for name in ["plain", "compare", "set"] {
+        time(&format!("loop over related posts: {name}"), 200_000, || {
+            out.clear();
+            let _ = black_box(loops.render_into(name, black_box(&p), &mut out));
+        });
+    }
+
     let text = "A short excerpt of the post that runs for a sentence or two, with an apostrophe's worth of escaping. ".repeat(40);
     let mut esc = Vec::with_capacity(8192);
     let t = time("escape 4 KiB of text for HTML", 100_000, || {

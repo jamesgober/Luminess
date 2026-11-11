@@ -1,6 +1,6 @@
 //! Runs a compiled template against a view, writing into the caller's buffer.
 
-use std::{borrow::Cow, fmt::Write as _, sync::Arc};
+use std::{borrow::Cow, fmt::Write as _, rc::Rc, sync::Arc};
 
 use crate::{
     compile::{CExpr, CNode, Esc, Filt, LoopAttr, Program, Step},
@@ -100,21 +100,28 @@ struct Slot<'a> {
     value: Value<'a>,
     index: usize,
     len: usize,
-    /// A `set` value that is text a filter built: its index in `Run::texts`.
-    text: Option<usize>,
+    /// A `set` value that is text a filter built, kept in `Run::texts` at
+    /// this slot's index.
+    text: bool,
 }
 
-/// A value during evaluation: a view's value, or text a filter produced.
+/// Call arguments up to this many are evaluated without allocating.
+const ARGS_INLINE: usize = 4;
+
+/// A value during evaluation: a view's value, text a filter produced, or
+/// text a `set` keeps (shared, so reading it copies nothing).
 enum Val<'a> {
     V(Value<'a>),
     Owned(String),
+    Shared(Rc<str>),
 }
 
 struct Run<'a, 'o> {
     root: &'a dyn View,
     filters: &'a [Arc<dyn FilterFn>],
     slots: Vec<Slot<'a>>,
-    texts: Vec<String>,
+    /// Text kept by `set`, by slot; grown when a `set` first needs it.
+    texts: Vec<Option<Rc<str>>>,
     out: &'o mut Vec<u8>,
     scratch: String,
     fallbacks: u32,
@@ -143,7 +150,7 @@ pub(crate) fn run(
                 value: Value::Absent,
                 index: 0,
                 len: 0,
-                text: None,
+                text: false,
             };
             program.slots
         ],
@@ -173,6 +180,7 @@ fn as_value<'v>(v: &'v Val<'_>) -> Value<'v> {
     match v {
         Val::V(v) => *v,
         Val::Owned(s) => Value::Text(s),
+        Val::Shared(s) => Value::Text(s),
     }
 }
 
@@ -270,6 +278,7 @@ fn truthy(v: &Val<'_>) -> bool {
             Value::List(l) => !l.is_empty(),
         },
         Val::Owned(s) => !s.is_empty(),
+        Val::Shared(s) => !s.is_empty(),
     }
 }
 
@@ -347,7 +356,7 @@ impl<'a> Run<'a, '_> {
                                 value: l.get(i),
                                 index: i,
                                 len,
-                                text: None,
+                                text: false,
                             };
                             self.nodes(body);
                         }
@@ -356,35 +365,41 @@ impl<'a> Run<'a, '_> {
                 CNode::Bind { slot, value, body } => {
                     let v = match self.eval(value) {
                         Val::V(v) => v,
-                        Val::Owned(_) => Value::Absent,
+                        Val::Owned(_) | Val::Shared(_) => Value::Absent,
                     };
                     self.slots[usize::from(*slot)] = Slot {
                         value: v,
                         index: 0,
                         len: 1,
-                        text: None,
+                        text: false,
                     };
                     self.nodes(body);
                 }
                 CNode::Set { slot, value } => {
-                    let slot_value = match self.eval(value) {
-                        Val::V(v) => Slot {
-                            value: v,
-                            index: 0,
-                            len: 1,
-                            text: None,
-                        },
-                        Val::Owned(s) => {
-                            self.texts.push(s);
-                            Slot {
-                                value: Value::Absent,
+                    let i = usize::from(*slot);
+                    let text = match self.eval(value) {
+                        Val::V(v) => {
+                            self.slots[i] = Slot {
+                                value: v,
                                 index: 0,
                                 len: 1,
-                                text: Some(self.texts.len() - 1),
-                            }
+                                text: false,
+                            };
+                            continue;
                         }
+                        Val::Owned(s) => Rc::from(s),
+                        Val::Shared(s) => s,
                     };
-                    self.slots[usize::from(*slot)] = slot_value;
+                    if self.texts.len() <= i {
+                        self.texts.resize(i + 1, None);
+                    }
+                    self.texts[i] = Some(text);
+                    self.slots[i] = Slot {
+                        value: Value::Absent,
+                        index: 0,
+                        len: 1,
+                        text: true,
+                    };
                 }
                 CNode::Try(body, fallback) => {
                     let mark = self.out.len();
@@ -440,9 +455,12 @@ impl<'a> Run<'a, '_> {
             }
             CExpr::Slot(s, steps) => {
                 let sl = self.slots[usize::from(*s)];
-                let base = match sl.text {
-                    Some(i) => Val::Owned(self.texts[i].clone()),
-                    None => Val::V(sl.value),
+                let base = if sl.text {
+                    self.texts[usize::from(*s)]
+                        .as_ref()
+                        .map_or(Val::V(Value::Absent), |t| Val::Shared(Rc::clone(t)))
+                } else {
+                    Val::V(sl.value)
                 };
                 if steps.is_empty() {
                     base
@@ -497,6 +515,7 @@ impl<'a> Run<'a, '_> {
                     Val::V(Value::Absent) => true,
                     Val::V(Value::Text(s) | Value::Html(s)) => s.is_empty(),
                     Val::Owned(s) => s.is_empty(),
+                    Val::Shared(s) => s.is_empty(),
                     Val::V(_) => false,
                 };
                 if empty { self.eval(b) } else { v }
@@ -504,7 +523,7 @@ impl<'a> Run<'a, '_> {
             CExpr::Filter(f, x, args) => {
                 let v = self.eval(x);
                 match f {
-                    Filt::Custom(i) => self.custom(usize::from(*i), v, args),
+                    Filt::Custom(i) => self.custom(usize::from(*i), &v, args),
                     Filt::First | Filt::Last => match v {
                         Val::V(Value::List(l)) if !l.is_empty() => {
                             Val::V(l.get(if *f == Filt::First { 0 } else { l.len() - 1 }))
@@ -604,7 +623,7 @@ impl<'a> Run<'a, '_> {
             CExpr::Root(steps) => (Value::View(self.root), steps),
             CExpr::Slot(s, steps) => {
                 let sl = &self.slots[usize::from(*s)];
-                if sl.text.is_some() {
+                if sl.text {
                     return None;
                 }
                 (sl.value, steps)
@@ -635,29 +654,53 @@ impl<'a> Run<'a, '_> {
         v
     }
 
-    fn call(&mut self, x: &'a dyn View, id: FieldId, args: &'a [CExpr]) -> Val<'a> {
-        let vals: Vec<Val<'a>> = args.iter().map(|a| self.eval(a)).collect();
-        let values: Vec<Value<'_>> = vals.iter().map(as_value).collect();
-        match x.call(id.index(), &values) {
-            Answer::Value(v) => Val::V(v),
-            Answer::Text(s) => Val::Owned(s),
+    /// Evaluates call arguments, in place when there are a few.
+    fn with_args<R>(
+        &mut self,
+        args: &'a [CExpr],
+        f: impl FnOnce(&mut Self, &[Value<'_>]) -> R,
+    ) -> R {
+        if args.len() <= ARGS_INLINE {
+            let mut vals = [const { Val::V(Value::Absent) }; ARGS_INLINE];
+            for (slot, a) in vals.iter_mut().zip(args) {
+                *slot = self.eval(a);
+            }
+            let mut values = [Value::Absent; ARGS_INLINE];
+            for (value, v) in values.iter_mut().zip(&vals) {
+                *value = as_value(v);
+            }
+            f(self, &values[..args.len()])
+        } else {
+            let vals: Vec<Val<'a>> = args.iter().map(|a| self.eval(a)).collect();
+            let values: Vec<Value<'_>> = vals.iter().map(as_value).collect();
+            f(self, &values)
         }
     }
 
-    fn custom(&mut self, i: usize, v: Val<'a>, args: &'a [CExpr]) -> Val<'a> {
-        let vals: Vec<Val<'a>> = args.iter().map(|a| self.eval(a)).collect();
-        let values: Vec<Value<'_>> = vals.iter().map(as_value).collect();
-        let f = &self.filters[i];
-        match v {
-            Val::V(value) => match f.apply(value, &values) {
+    fn call(&mut self, x: &'a dyn View, id: FieldId, args: &'a [CExpr]) -> Val<'a> {
+        self.with_args(args, |_, values| match x.call(id.index(), values) {
+            Answer::Value(v) => Val::V(v),
+            Answer::Text(s) => Val::Owned(s),
+        })
+    }
+
+    fn custom(&mut self, i: usize, v: &Val<'a>, args: &'a [CExpr]) -> Val<'a> {
+        let filters = self.filters;
+        let f = &filters[i];
+        self.with_args(args, |_, values| match v {
+            Val::V(value) => match f.apply(*value, values) {
                 Answer::Value(v) => Val::V(v),
                 Answer::Text(s) => Val::Owned(s),
             },
-            Val::Owned(s) => match f.apply(Value::Text(&s), &values) {
+            Val::Owned(s) => match f.apply(Value::Text(s), values) {
                 Answer::Value(v) => detach(v),
                 Answer::Text(t) => Val::Owned(t),
             },
-        }
+            Val::Shared(s) => match f.apply(Value::Text(s), values) {
+                Answer::Value(v) => detach(v),
+                Answer::Text(t) => Val::Owned(t),
+            },
+        })
     }
 
     /// The text form of a scalar value.
@@ -672,6 +715,7 @@ impl<'a> Run<'a, '_> {
                 Value::Absent | Value::View(_) | Value::List(_) => Cow::Borrowed(""),
             },
             Val::Owned(s) => Cow::Borrowed(s),
+            Val::Shared(s) => Cow::Borrowed(s),
         }
     }
 
@@ -692,9 +736,8 @@ impl<'a> Run<'a, '_> {
             _ => match (num(x), num(y)) {
                 (Some(a), Some(b)) => a.partial_cmp(&b),
                 _ => {
-                    let a = Self::text(x).into_owned();
-                    let b = Self::text(y);
-                    Some(a.as_str().cmp(&b))
+                    let (a, b) = (Self::text(x), Self::text(y));
+                    Some(a.as_ref().cmp(b.as_ref()))
                 }
             },
         };
@@ -827,6 +870,7 @@ impl<'a> Run<'a, '_> {
                 }
             },
             Val::Owned(s) => self.text_out(&s, esc),
+            Val::Shared(s) => self.text_out(&s, esc),
         }
     }
 
