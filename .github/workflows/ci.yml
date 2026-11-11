@@ -68,7 +68,7 @@ jobs:
           set -euo pipefail
           cargo generate-lockfile
           if [ "${{ matrix.web_net }}" = oldest ]; then
-            cargo update -p web-net --precise 0.8.0
+            cargo update -p web-net --precise 0.10.0
           fi
           cargo tree -i web-net --features web-net -e normal --depth 0
       - name: Test with the web-net feature

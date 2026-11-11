@@ -52,7 +52,7 @@ here is a complete program, compiled and run as a doctest.
 [dependencies]
 luminess = "0.10"
 # with the web-net integration:
-# luminess = { version = "0.10", features = ["web-net"] }
+# luminess = { version = "0.10", features = ["web-net"] }  # web-net 0.10
 ```
 
 Everything public is at the crate root, plus the `escape` module, the
@@ -584,7 +584,8 @@ reloads.
 `web::Theme::new(pages).with_error_pages(errors)` adds error pages from an
 `Engine<web::ErrorView>`: `error/<status>`, then `error`, then web-net's
 built-in page. An error template reads `error.status`, `error.title`,
-`error.message`, and `error.reference`. `theme.pages()` and
+`error.message`, `error.reference`, and `error.base` (the site's base path: `""`
+at the root, `/blog` in a folder; write links as `{{ error.base }}/static/site.css`). `theme.pages()` and
 `theme.error_pages()` return the engines, for `reload_dir` or `replace`.
 
 ```rust,ignore

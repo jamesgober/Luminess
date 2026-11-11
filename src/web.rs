@@ -38,7 +38,10 @@ use web_net::{ErrorPage, Output, Render, TemplateId};
 use crate::{Engine, ErrorKind, View};
 
 /// The values an error page template reads, as `error`: `status`, `title`,
-/// `message`, and `reference` (what the visitor quotes to support).
+/// `message`, `reference` (what the visitor quotes to support), and `base`,
+/// the site's base path (`""` at the root, `/blog` for a site in a folder, never
+/// a trailing slash), so links and stylesheets point inside the site:
+/// `<link rel="stylesheet" href="{{ error.base }}/static/site.css">`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ErrorView {
     /// The status (`404`).
@@ -49,9 +52,11 @@ pub struct ErrorView {
     pub message: String,
     /// The request's reference.
     pub reference: String,
+    /// The site's base path.
+    pub base: String,
 }
 
-crate::view!(ErrorView as "error" { status: int, title: text, message: text, reference: text });
+crate::view!(ErrorView as "error" { status: int, title: text, message: text, reference: text, base: text });
 
 impl ErrorView {
     fn from_page(page: &ErrorPage<'_>) -> Self {
@@ -60,6 +65,7 @@ impl ErrorView {
             title: page.title.to_owned(),
             message: page.message.to_owned(),
             reference: page.reference.to_owned(),
+            base: page.base.to_owned(),
         }
     }
 }

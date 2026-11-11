@@ -365,7 +365,7 @@ The `web-net` feature makes an `Engine` a [web-net](https://crates.io/crates/web
 template engine, reading your page views directly:
 
 ```toml
-luminess = { version = "0.10", features = ["web-net"] }  # web-net 0.8 or 0.9
+luminess = { version = "0.10", features = ["web-net"] }  # web-net 0.10
 ```
 
 ```rust
@@ -379,7 +379,8 @@ let app = web_net::App::with_gate(gate).render(Theme::new(pages).with_error_page
 Route templates are resolved when the app is built, so a missing template
 stops it from starting; the ids stay valid across reloads. Error pages
 come from `error/<status>`, then `error`, then web-net's built-in page; they
-read `error.status`, `error.title`, `error.message`, and `error.reference`.
+read `error.status`, `error.title`, `error.message`, `error.reference`, and `error.base`
+(the site's base path, for links: `{{ error.base }}/static/site.css`).
 Views must be `'static` (owned data or `Arc`). The default build of Luminess
 depends on nothing.
 
@@ -472,7 +473,7 @@ seven runs; `docs/PERFORMANCE.md` has the ranges and the 0.9.2 comparison.
 
 ### **Version compatibility**
 - **Rust**: 1.85 or newer (edition 2024)
-- **Dependencies**: none by default; the `web-net` feature adds web-net 0.8 or 0.9
+- **Dependencies**: none by default; the `web-net` feature adds web-net 0.10
 
 ### **Development setup**
 ```bash

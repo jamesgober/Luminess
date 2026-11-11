@@ -65,6 +65,10 @@ markup (now escaped).
   view of it, as it does not end the element.
 - In CSS, a literal `*` right after an output, and two outputs side by
   side, are compile errors: a value could open a comment with them.
+- The `web-net` feature uses web-net 0.10. `web::ErrorView` has `base`, the
+  site's base path (`""` at the root, `/blog` in a folder), so error pages
+  of a site installed in a folder link inside it:
+  `{{ error.base }}/static/site.css`.
 - With the `web-net` feature, a render stops at web-net's output budget
   instead of building the whole page first.
 - Text comparisons in conditions and reads of `set` text copy nothing, and
@@ -107,6 +111,8 @@ markup (now escaped).
 | `match value { ... }` on `Value`, `Kind`, `Answer` covering every variant | add a `_` arm |
 | `items: list(html)` holding `Vec<String>` | `Vec<luminess::Html>` (`Html::from(s)`) |
 | a filter or method declared `Kind::Text` that answers `Value::Html` | declare it `Kind::Html` |
+| the `web-net` feature with web-net 0.8 or 0.9 | web-net 0.10 |
+| error page links written from the root (`/static/site.css`) | `{{ error.base }}/static/site.css` |
 
 A view written by hand, before and after:
 

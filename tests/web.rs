@@ -179,3 +179,30 @@ fn the_budget_is_kept_while_rendering() {
     assert_eq!(render(&engine, "t", 500).unwrap_err(), "luminess.too_large");
     assert_eq!(render(&engine, "t", 4_000).unwrap().len(), 2_000);
 }
+
+#[test]
+fn error_pages_link_inside_the_site_folder() {
+    let pages = Engine::<Page>::builder().template("home", "x").build().unwrap();
+    let errors = Engine::<ErrorView>::builder()
+        .template(
+            "error",
+            "<link rel=\"stylesheet\" href=\"{{ error.base }}/static/site.css\"><a href=\"{{ error.base }}/\">home</a>",
+        )
+        .build()
+        .unwrap();
+    let theme = Theme::new(pages).with_error_pages(errors);
+    let render = |page: web_net::ErrorPage<'_>| {
+        let mut buf = Vec::new();
+        assert!(theme.error_page(&page, &mut Output::new(&mut buf, 1 << 20)).unwrap());
+        String::from_utf8(buf).unwrap()
+    };
+    let p = web_net::ErrorPage::new(404, "Not Found", "-", "r");
+    assert_eq!(
+        render(p.with_base("/blog")),
+        "<link rel=\"stylesheet\" href=\"/blog/static/site.css\"><a href=\"/blog/\">home</a>"
+    );
+    assert_eq!(
+        render(p),
+        "<link rel=\"stylesheet\" href=\"/static/site.css\"><a href=\"/\">home</a>"
+    );
+}
