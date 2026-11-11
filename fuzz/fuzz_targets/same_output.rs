@@ -303,8 +303,14 @@ fuzz_target!(|data: &[u8]| {
             // Chain links count toward the expression depth now, so a depth
             // error may be found at another place.
             let depth = |e: &str| e.contains("nested too deeply") || e.contains("too long");
+            // Branches that end in the same JavaScript place join now; 0.9.2
+            // refused some of them (and reported what followed differently).
+            let js_join = |e: &str| {
+                e.contains("end in different places: a JavaScript")
+                    || e.contains("starts in a JavaScript")
+            };
             // A chain now too long can stop the parse before another error.
-            if !changed && !depth(&now) {
+            if !changed && !depth(&now) && !js_join(&base) {
                 assert_eq!(now, base);
             }
         }
