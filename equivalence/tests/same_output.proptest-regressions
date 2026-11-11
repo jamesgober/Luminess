@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 18db74a7a7f3f400c2e7983d88cd30da339747cc31af4151c4ad9c97871a2790 # shrinks to parts = ["<script>var a = ", "<p>", "{% if loop.first %}F{% endif %}"], p = Page { title: "", body: "", url: "", count: 0, ratio: 0.0, on: false, missing: None, items: [] }
+cc 645d77d83315b2d8e6118a1957666aa58746ca05caab2cec287a72ff1755354a # shrinks to parts = ["<style>a { color: ", "{{ page.title }}", "{{ page.title }}"], p = Page { title: "", body: "", url: "", count: 0, ratio: 0.0, on: false, missing: None, items: [] }

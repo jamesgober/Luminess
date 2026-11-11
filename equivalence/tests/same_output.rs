@@ -1,13 +1,7 @@
 //! This tree must render exactly what the published base release renders:
 //! the same compile result for every template, and byte-for-byte the same
-//! output for every view.
-//!
-//! The one exception is the random-piece property, for the places 0.9.3
-//! reads the way a browser does where 0.9.2 did not: URL attributes, and
-//! scripts across line breaks and HTML-like comments. There a difference is
-//! allowed only when the template has such a place, and outputs that both
-//! compile must still agree outside URL attribute values, with no URL
-//! attribute holding a `javascript:` URL.
+//! output for every view. The one exception: a template this tree refuses
+//! with one of the refusals it adds over the base (see `NEW_REFUSALS`).
 
 use proptest::prelude::*;
 
@@ -155,44 +149,21 @@ fn page() -> impl Strategy<Value = Page> {
 
 static COMPILED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-/// The template has a place where 0.9.3 changed on purpose.
-fn changed_on_purpose(src: &str) -> bool {
-    src.contains("href=")
-        || (src.contains("<script") && (src.contains('\n') || src.contains("<!--")))
-}
+/// Compile errors this tree adds over the base release, for templates that
+/// could let a value join the CSS or markup around it.
+const NEW_REFUSALS: &[&str] = &[
+    "two CSS values side by side",
+    "could open a comment with the value",
+    "SVG animation value",
+    "right after `<` in a raw-text element",
+    "double-escaped",
+];
 
-/// `s` with the value of every `href` attribute removed.
-fn without_urls(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut rest = s;
-    while let Some(i) = rest.find("href=\"") {
-        out.push_str(&rest[..i + 6]);
-        rest = &rest[i + 6..];
-        let end = rest.find('"').unwrap_or(rest.len());
-        rest = &rest[end..];
-    }
-    out.push_str(rest);
-    out
-}
-
-/// No URL attribute value is a `javascript:` URL, as a browser reads it.
-fn no_script_urls(s: &str) -> bool {
-    s.split("href=\"").skip(1).all(|v| {
-        let v = &v[..v.find('"').unwrap_or(v.len())];
-        let v: String = v
-            .trim_start_matches(|c: char| c <= ' ')
-            .chars()
-            .filter(|c| !matches!(c, '\t' | '\n' | '\r'))
-            .collect();
-        !v.to_ascii_lowercase().starts_with("javascript:")
-    })
+fn newly_refused(e: &str) -> bool {
+    NEW_REFUSALS.iter().any(|m| e.contains(m))
 }
 
 fn same(src: &str, p: &Page) -> Result<(), TestCaseError> {
-    compare(src, p, true)
-}
-
-fn compare(src: &str, p: &Page, exact: bool) -> Result<(), TestCaseError> {
     let now = luminess::Engine::<Page>::builder()
         .template("t", src)
         .template("part", "<b>{{ page.title }}</b>")
@@ -206,32 +177,20 @@ fn compare(src: &str, p: &Page, exact: bool) -> Result<(), TestCaseError> {
             let _ = COMPILED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let a = now.render("t", p).unwrap();
             let b = base.render_to_string("t", p).unwrap();
-            if exact || a == b {
-                prop_assert_eq!(a, b, "template: {:?}", src);
-            } else {
-                prop_assert!(changed_on_purpose(src), "template: {:?}", src);
-                prop_assert_eq!(without_urls(&a), without_urls(&b), "template: {:?}", src);
-                prop_assert!(no_script_urls(&a), "template: {:?}: {}", src, a);
-            }
+            prop_assert_eq!(a, b, "template: {:?}", src);
         }
         (Err(now), Err(base)) => {
-            if exact || !changed_on_purpose(src) {
-                prop_assert_eq!(now.to_string(), base.to_string(), "template: {:?}", src);
+            let now = now.to_string();
+            if !newly_refused(&now) {
+                prop_assert_eq!(now, base.to_string(), "template: {:?}", src);
             }
         }
-        (Ok(now), Err(_)) if !exact && changed_on_purpose(src) => {
-            let a = now.render("t", p).unwrap();
-            prop_assert!(no_script_urls(&a), "template: {:?}: {}", src, a);
+        (Err(now), Ok(_)) => {
+            let now = now.to_string();
+            prop_assert!(newly_refused(&now), "template: {:?}: {}", src, now);
         }
-        (Err(_), Ok(_)) if !exact && changed_on_purpose(src) => {}
-        (now, base) => {
-            prop_assert!(
-                false,
-                "compile results differ for {:?}: now ok={} base ok={}",
-                src,
-                now.is_ok(),
-                base.is_ok()
-            );
+        (Ok(_), Err(base)) => {
+            prop_assert!(false, "compiles now, not in the base: {:?}: {}", src, base);
         }
     }
     Ok(())
@@ -281,7 +240,7 @@ proptest! {
         parts in prop::collection::vec(prop::sample::select(PIECES), 0..24),
         p in page(),
     ) {
-        compare(&parts.concat(), &p, false)?;
+        same(&parts.concat(), &p)?;
     }
 
     #[test]

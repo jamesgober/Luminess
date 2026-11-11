@@ -182,7 +182,10 @@ fn the_budget_is_kept_while_rendering() {
 
 #[test]
 fn error_pages_link_inside_the_site_folder() {
-    let pages = Engine::<Page>::builder().template("home", "x").build().unwrap();
+    let pages = Engine::<Page>::builder()
+        .template("home", "x")
+        .build()
+        .unwrap();
     let errors = Engine::<ErrorView>::builder()
         .template(
             "error",
@@ -193,7 +196,11 @@ fn error_pages_link_inside_the_site_folder() {
     let theme = Theme::new(pages).with_error_pages(errors);
     let render = |page: web_net::ErrorPage<'_>| {
         let mut buf = Vec::new();
-        assert!(theme.error_page(&page, &mut Output::new(&mut buf, 1 << 20)).unwrap());
+        assert!(
+            theme
+                .error_page(&page, &mut Output::new(&mut buf, 1 << 20))
+                .unwrap()
+        );
         String::from_utf8(buf).unwrap()
     };
     let p = web_net::ErrorPage::new(404, "Not Found", "-", "r");

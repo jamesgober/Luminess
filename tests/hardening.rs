@@ -490,6 +490,17 @@ fn double_escaped_script_content_is_followed() {
     // Output inside the double-escaped part is refused.
     let e = refused("<script><!--<script> {{ p.v }} </script>--></script>");
     assert!(e.contains("double-escaped"), "{e}");
+    // Branches in a script join after text holding `<`, unless one of them
+    // is part way into `<!--` or `<script`.
+    assert_eq!(
+        ok(
+            "<script>if (a<b) {% if p.w %}go(){% endif %}x({{ p.v }})</script>",
+            "1",
+            "1"
+        ),
+        "<script>if (a<b) go()x(\"1\")</script>"
+    );
+    let _ = refused("<script>{% if p.w %}<!{% endif %}--<script> {{ p.v }}</script>");
     // `-->` leaves the escaped states; output after it is followed again.
     let out = ok(
         "<script>

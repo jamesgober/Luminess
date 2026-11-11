@@ -310,16 +310,48 @@ impl ScriptData {
         self.state == 2
     }
 
-    /// Where two branches meet: the same state, and no part of `<!--`,
-    /// `-->`, or `<script` read in one and not the other.
+    /// The bytes just read that begin a pattern this state looks for: what
+    /// a following byte could complete.
+    fn pending(&self) -> &[u8] {
+        let pats: &[&[u8]] = match self.state {
+            0 => &[b"<!--"],
+            1 => &[b"-->", b"<script"],
+            _ => &[b"-->", b"</script"],
+        };
+        let mut k = 0;
+        for pat in pats {
+            // The delimiter after `<script` is not part of the pattern, so
+            // all of it may be pending.
+            let most = if pat.ends_with(b"t") {
+                pat.len()
+            } else {
+                pat.len() - 1
+            };
+            for n in (k + 1..=most).rev() {
+                if self.recent[8 - n..] == pat[..n] {
+                    k = n;
+                    break;
+                }
+            }
+        }
+        &self.recent[8 - k..]
+    }
+
+    /// Where two branches meet: the same state, and the same part of a
+    /// pattern pending, so what follows reads the same after either.
     fn join(self, other: Self) -> Option<Self> {
         if self == other {
             return Some(self);
         }
-        let partial = |d: &Self| d.recent.iter().any(|&c| c == b'<' || c == b'-');
-        (self.state == other.state && !partial(&self) && !partial(&other)).then_some(Self {
+        let pending = self.pending();
+        if self.state != other.state || pending != other.pending() {
+            return None;
+        }
+        let mut recent = [0; 8];
+        recent[8 - pending.len()..].copy_from_slice(pending);
+        Some(Self {
             state: self.state,
-            recent: [0; 8],
+            recent,
         })
     }
 }
