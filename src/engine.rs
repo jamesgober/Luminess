@@ -847,22 +847,27 @@ impl<V: View> Engine<V> {
         Some(id)
     }
 
-    /// Renders the template registered as `id`. The name is returned for
-    /// error messages.
+    /// Renders the template registered as `id`, writing at most `limit`
+    /// bytes (and at most `Builder::max_output`): the caller's budget is
+    /// kept while rendering, not checked afterwards.
     #[cfg(feature = "web-net")]
     pub(crate) fn render_id(
         &self,
         id: u32,
         view: &V,
         out: &mut Vec<u8>,
+        limit: usize,
     ) -> Result<Rendered, Error> {
         self.with_set(|set| {
             let program = usize::try_from(id)
                 .ok()
                 .and_then(|i| set.ids.get(i).copied().flatten());
             match program {
-                Some(p) => render::run(&set.programs[p], &set.filters, view, out, set.max_output)
-                    .ok_or_else(|| Error::too_large(&self.registered_name(id), set.max_output)),
+                Some(p) => {
+                    let limit = set.max_output.min(limit);
+                    render::run(&set.programs[p], &set.filters, view, out, limit)
+                        .ok_or_else(|| Error::too_large(&self.registered_name(id), limit))
+                }
                 None => Err(Error::not_found(&self.registered_name(id))),
             }
         })

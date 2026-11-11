@@ -167,3 +167,15 @@ fn themes_render_error_pages() {
     );
     assert!(buf.is_empty());
 }
+
+#[test]
+fn the_budget_is_kept_while_rendering() {
+    let engine = Engine::<Page>::builder()
+        .template("t", "{% for i in page.items %}{{ i }}{% endfor %}")
+        .build()
+        .unwrap();
+    // 40 items of 50 bytes: 2,000 bytes, past a budget of 500. The render
+    // stops at the budget instead of building the whole page first.
+    assert_eq!(render(&engine, "t", 500).unwrap_err(), "luminess.too_large");
+    assert_eq!(render(&engine, "t", 4_000).unwrap().len(), 2_000);
+}

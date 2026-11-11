@@ -466,9 +466,14 @@ fn double_escaped_script_content_is_followed() {
         CODE,
         "",
     );
-    assert!(out.contains("
+    assert!(
+        out.contains(
+            "
 \"alert(document.domain)\"
-"), "{out}");
+"
+        ),
+        "{out}"
+    );
     // Output inside the double-escaped part is refused.
     let e = refused("<script><!--<script> {{ p.v }} </script>--></script>");
     assert!(e.contains("double-escaped"), "{e}");

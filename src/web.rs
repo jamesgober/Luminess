@@ -88,7 +88,8 @@ impl<V: View + 'static> Render for Engine<V> {
     ) -> Result<(), web_net::RenderError> {
         // A block that fails is not an error: its fallback is written and
         // the page goes out.
-        self.render_id(template.0, view, out.buffer())
+        let limit = out.remaining();
+        self.render_id(template.0, view, out.buffer(), limit)
             .map(|_| ())
             .map_err(|e| convert(&e))
     }
