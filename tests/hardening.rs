@@ -372,3 +372,115 @@ fn a_template_with_another_schema_is_not_rendered_with_the_wrong_view() {
         "<b>a</b>"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Declared kinds, SVG animation, CSS, and scripts the parser double-escapes
+// ---------------------------------------------------------------------------
+
+#[test]
+fn text_stays_text_whatever_a_filter_answers() {
+    use luminess::{Answer, Kind, Value};
+    let e = Engine::<P>::builder()
+        .filter("shout", &[], Kind::Text, |v, _| match v {
+            Value::Text(s) => Answer::Value(Value::Html(s)),
+            other => other.into(),
+        })
+        .template("t", "<p>{{ p.v | shout }}</p>")
+        .build()
+        .unwrap();
+    let out = e
+        .render(
+            "t",
+            &P {
+                v: "<img src=x onerror=alert(1)>".into(),
+                w: String::new(),
+            },
+        )
+        .unwrap();
+    assert_eq!(out, "<p>&lt;img src=x onerror=alert(1)&gt;</p>");
+}
+
+#[test]
+fn html_items_of_a_list_are_markup() {
+    use luminess::Html;
+    struct L {
+        items: Vec<Html>,
+        plain: Vec<String>,
+    }
+    luminess::view!(L as "l" { items: list(html), plain: list(text) });
+    let t = luminess::Template::<L>::new(
+        "{% for i in l.items %}{{ i }}{% endfor %}|{% for i in l.plain %}{{ i }}{% endfor %}",
+    )
+    .unwrap();
+    let out = t
+        .render(&L {
+            items: vec![Html::from("<b>x</b>")],
+            plain: vec!["<b>y</b>".into()],
+        })
+        .unwrap();
+    assert_eq!(out, "<b>x</b>|&lt;b&gt;y&lt;/b&gt;");
+}
+
+#[test]
+fn svg_animation_values_are_refused() {
+    for tpl in [
+        r#"<svg><a><animate attributeName="href" values="{{ p.v }}"/></a></svg>"#,
+        r#"<svg><a><set attributeName="href" to="{{ p.v }}"/></a></svg>"#,
+        r#"<svg><animateTransform from="{{ p.v }}"/></svg>"#,
+    ] {
+        let e = refused(tpl);
+        assert!(e.contains("animation"), "{tpl:?}: {e}");
+    }
+    // Other attributes of those elements are plain attributes.
+    assert_eq!(
+        ok(r#"<svg><animate dur="{{ p.v }}"/></svg>"#, "1s", ""),
+        r#"<svg><animate dur="1s"/></svg>"#
+    );
+}
+
+#[test]
+fn css_values_cannot_join_the_text_around_them() {
+    let _ = refused("<style>a { width: <{{ p.v }} }</style>");
+    let _ = refused("<title>a<{{ p.v }}</title>");
+    assert_eq!(
+        ok("<style>a { width: {{ p.v }}* 2 }</style>", "1/", ""),
+        "<style>a { width: blocked* 2 }</style>"
+    );
+    // In a script a value is a literal, so `<` before it is fine.
+    assert_eq!(
+        ok("<script>if (i<{{ p.v }}) go();</script>", "3", ""),
+        "<script>if (i<\"3\") go();</script>"
+    );
+}
+
+#[test]
+fn double_escaped_script_content_is_followed() {
+    // `</script>` inside the double-escaped part does not end the element:
+    // the value after it is still script.
+    let out = ok(
+        "<script>
+<!--<script>
+<!--</script>
+{{ p.v }}
+</script>",
+        CODE,
+        "",
+    );
+    assert!(out.contains("
+\"alert(document.domain)\"
+"), "{out}");
+    // Output inside the double-escaped part is refused.
+    let e = refused("<script><!--<script> {{ p.v }} </script>--></script>");
+    assert!(e.contains("double-escaped"), "{e}");
+    // `-->` leaves the escaped states; output after it is followed again.
+    let out = ok(
+        "<script>
+<!--<script>
+-->
+var a = {{ p.v }};
+</script>",
+        CODE,
+        "",
+    );
+    assert!(out.contains("var a = \"alert(document.domain)\";"), "{out}");
+}
