@@ -8,9 +8,11 @@ All notable changes to `luminess` are documented here. The format follows
 
 ## [0.10.0] - 2026-11-11
 
-A simpler API. Breaking: every change is listed under "Migrating from 0.9"
-below. Template syntax, escaping, and output are unchanged byte for byte,
-and rendering is as fast as in 0.9.3.
+A simpler API, and the rest of the hardening begun in 0.9.3. Breaking:
+every change is listed under "Migrating from 0.9" below. Template syntax is
+unchanged, and output is the same as 0.9.3's byte for byte for every theme
+that compiles in both, except where a value declared text came back as
+markup (now escaped).
 
 ### Added
 
@@ -27,6 +29,8 @@ and rendering is as fast as in 0.9.3.
   new theme fully, then swap it in.
 - `Builder::directory_with_extension(dir, extension)`.
 - `ErrorKind::Io`: a theme folder or file that cannot be read.
+- `Html`: markup the application trusts, for the items of a `list(html)`
+  field.
 - `docs/API.md` rewritten: every public item with its parameters, errors,
   and examples, simplest first; every example runs as a doctest.
 
@@ -47,6 +51,24 @@ and rendering is as fast as in 0.9.3.
   is needed, so types can refer to themselves.
 - The equivalence tests and the `same_output` fuzz target compare against
   0.9.3.
+- A value is written as markup only where the schema declared it `html`. A
+  field, method, or filter declared text that answers `Value::Html` is
+  escaped; so is an `html` field reached through `default` on a text value.
+- A `list(html)` field holds `Vec<Html>`; `view!` refuses one of plain
+  strings at compile time.
+- `Value`, `Kind`, and `Answer` are `#[non_exhaustive]`.
+- Refused at compile time: output in SVG animation values (`values`, `to`,
+  `from`, `by` on `animate`, `set`, `animateMotion`, `animateTransform`),
+  output right after `<` in a raw-text element other than a script, and
+  output in a script the HTML parser reads as double-escaped (after `<!--`
+  and `<script`). Such a script's `</script>` no longer ends the tracker's
+  view of it, as it does not end the element.
+- `escape::css_value_allowed` refuses a value that ends in `/`.
+- With the `web-net` feature, a render stops at web-net's output budget
+  instead of building the whole page first.
+- Text comparisons in conditions and reads of `set` text copy nothing, and
+  calls with up to four arguments allocate nothing: about 45 ns less per
+  comparison and 30 ns less per `set` read.
 
 ### Removed
 
@@ -81,6 +103,9 @@ and rendering is as fast as in 0.9.3.
 | `SchemaRef`, `SchemaBuilder::object(name, impl Into<SchemaRef>)` | `SchemaBuilder::object(name, Schema)`; `Kind::Object(Schema)` |
 | `Rendered::is_complete()` | `rendered.failures().is_empty()` |
 | `Rendered::first_failure()` | `rendered.failures().first()` |
+| `match value { ... }` on `Value`, `Kind`, `Answer` covering every variant | add a `_` arm |
+| `items: list(html)` holding `Vec<String>` | `Vec<luminess::Html>` (`Html::from(s)`) |
+| a filter or method declared `Kind::Text` that answers `Value::Html` | declare it `Kind::Html` |
 
 A view written by hand, before and after:
 

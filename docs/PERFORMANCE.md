@@ -81,7 +81,11 @@ string as one overlapping eight-byte word, instead of byte by byte.
 
 ## Allocation
 
-A render allocates nothing for templates without loops, and one small vector
-for the loop slots of templates with loops. Filters that build text
-(`upper`, `join`, `date`, ...) allocate their result. Write into a buffer you
-keep (`out.clear()` between renders) to reuse its capacity.
+A render allocates one small vector for its loop and `set` slots, the
+output it writes, and the results of filters that build text (`upper`,
+`join`, `date`, ...), a float, or a `Display` value. A `set` that holds such
+text keeps it once per slot, however often it is read or the loop around it
+runs; comparisons and calls with up to four arguments allocate nothing.
+`render` returns a new `String`, which costs its allocation and a UTF-8
+check of the page (about 1 µs for 19 KiB); write into a buffer you keep
+(`render_into`, `out.clear()` between renders) to skip both.

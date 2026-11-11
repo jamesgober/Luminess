@@ -15,7 +15,10 @@ application serves a single page.
 | Every other value | **no** | it may hold anything a visitor typed |
 
 A value marked `| raw` is written as is. `| raw` is allowed only in HTML
-text, so `grep '| raw'` lists every place a theme writes unescaped output.
+text, so `grep '| raw'` lists every place a theme writes unescaped output
+apart from fields, methods, and filters the schema declares `html`. A value
+is written as markup only where its declared kind is `html`: one declared
+text is escaped even when the view or filter answers `Value::Html`.
 
 ## How the escaper is chosen
 
@@ -52,7 +55,11 @@ element.
 ## Refused at compile time
 
 Output in an unquoted attribute value, a tag name, an attribute name, an HTML
-comment, a `<!...>` declaration, `srcdoc`, a JavaScript comment or regular
+comment, a `<!...>` declaration, `srcdoc`, an SVG animation value (`values`,
+`to`, `from`, `by` on `animate`, `set`, `animateMotion`, `animateTransform`,
+which can set an `href`), right after `<` in a raw-text element other than a
+script, a script the HTML parser reads as double-escaped (after `<!--` and
+`<script`), a JavaScript comment or regular
 expression, right after `/` or a backslash in JavaScript or CSS, right after
 `$` in a template literal, and in a CSS comment. A literal `:` or `&` after an
 output, before a URL's first `/`, `?`, or `#`, is refused too: the output
@@ -86,9 +93,6 @@ These are accepted, documented trade-offs, not oversights:
 - **`srcset`.** The scheme is checked only at the start of the value; image
   candidates after the first are normalized but not checked. Browsers do not
   run script from image URLs.
-- **SVG animation.** `animate` and `set` write `values`, `to`, `from`, and
-  `by` into the attribute `attributeName` names, which may be an `href`;
-  those are escaped as plain attributes. Never put visitor input there.
 - **A valid URL can still load something.** The scheme check stops
   `javascript:` and its kin; it cannot know whether an `https` URL is one the
   site meant. In `<script src>`, `<iframe src>`, `<link href>`,

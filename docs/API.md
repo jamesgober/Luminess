@@ -38,7 +38,7 @@ here is a complete program, compiled and run as a doctest.
   - [web-net: `web::Theme` and `web::ErrorView`](#web-net-webtheme-and-weberrorview)
 - [Tier 3: the view layer](#tier-3-the-view-layer)
   - [`View`](#view)
-  - [`Value`, `List`, and `ToValue`](#value-list-and-tovalue)
+  - [`Value`, `List`, `ToValue`, and `Html`](#value-list-tovalue-and-html)
   - [Methods: `View::call` and `Answer`](#methods-viewcall-and-answer)
   - [Blocks that render themselves: `Output` and `BlockError`](#blocks-that-render-themselves-output-and-blockerror)
   - [Schemas: `Schema`, `SchemaBuilder`, `Kind`, `HasSchema`](#schemas-schema-schemabuilder-kind-hasschema)
@@ -643,12 +643,14 @@ fn main() -> Result<(), luminess::Error> {
 }
 ```
 
-## `Value`, `List`, and `ToValue`
+## `Value`, `List`, `ToValue`, and `Html`
 
 `Value<'a>` is one value read from a view: `Absent`, `Bool`, `Int`, `Float`,
 `Text` (escaped for its place), `Html` (trusted markup: written as is in HTML
-text, escaped anywhere else), `Display` (anything formattable, escaped like
-text), `View` (an object), and `List`. It is `Copy` and only borrows.
+text where the schema declared the value `html`, escaped anywhere else),
+`Display` (anything formattable, escaped like text), `View` (an object), and
+`List`. It is `Copy` and only borrows. `Value`, `Kind`, and `Answer` are
+`#[non_exhaustive]`: match them with a `_` arm.
 
 `List` is what a template loops over: `len()` and `get(index)`. It is
 implemented for `Vec<T>` and arrays of any `T: ToValue`.
@@ -657,6 +659,25 @@ implemented for `Vec<T>` and arrays of any `T: ToValue`.
 `Option` (absent when `None`), `Vec`, arrays, boxes, and `Arc`. `view!`
 implements it for your structs; implement it by hand for a type written by
 hand that other views hold as a field.
+
+`Html` is a `String` of markup the application trusts. A field declared
+`html` may be a plain `String`; the items of a `list(html)` field are
+`Html`, so a list of plain strings is never taken for markup (`view!`
+refuses `Vec<String>` there).
+
+```rust
+use luminess::{Html, Template};
+
+struct Page { snippets: Vec<Html>, tags: Vec<String> }
+luminess::view!(Page as "page" { snippets: list(html), tags: list(text) });
+
+fn main() -> Result<(), luminess::Error> {
+    let page = Page { snippets: vec![Html::from("<b>ok</b>")], tags: vec!["<b>".into()] };
+    let t = Template::<Page>::new("{% for s in page.snippets %}{{ s }}{% endfor %} {% for t in page.tags %}{{ t }}{% endfor %}")?;
+    assert_eq!(t.render(&page)?, "<b>ok</b> &lt;b&gt;");
+    Ok(())
+}
+```
 
 ```rust
 use luminess::{List, ToValue, Value};
@@ -893,3 +914,4 @@ fn main() {
 | `Answer` | what a method or filter answers: a borrowed value or text built for the call |
 | `BlockError` | the error a block (a value that renders itself) returns when it cannot render |
 | `index: usize` in `View` | a field is asked for by its position in the schema, a plain number |
+| `Html` | the markup it holds is written as HTML, as is |
