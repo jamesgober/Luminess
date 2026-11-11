@@ -93,9 +93,15 @@ impl<V: View> Builder<V> {
         self
     }
 
-    /// Adds a template that compiles against its own schema: a product page
-    /// and a blog post rendered from the same content type, each with its own
-    /// fields.
+    /// Adds a template that compiles against its own schema: a partial
+    /// included `with` a value of that schema (`{% include "card" with post %}`).
+    ///
+    /// Every template of an engine is rendered with the engine's view type,
+    /// which answers its own schema's fields. So a template added here can be
+    /// rendered by name only when its schema reads the view's fields in the
+    /// same order (the same names and kinds at the same positions, as a
+    /// prefix of the view's schema). Otherwise it can only be included with a
+    /// value of its own schema, and rendering it by name finds no template.
     pub fn template_with(
         mut self,
         name: impl Into<String>,
@@ -278,7 +284,12 @@ impl<V: View> Builder<V> {
                 let mut names =
                     Names::with_capacity_and_hasher(sources.len(), BuildHasherDefault::default());
                 for (i, s) in sources.into_iter().enumerate() {
-                    let _ = names.insert(s.name, i);
+                    // A template whose schema the view type does not answer
+                    // is only for `include ... with`: rendered by name, it
+                    // would read the wrong fields.
+                    if s.schema.reads_as(schema) {
+                        let _ = names.insert(s.name, i);
+                    }
                 }
                 Ok((names, programs))
             }

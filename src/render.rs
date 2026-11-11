@@ -11,17 +11,27 @@ use crate::{
 };
 
 /// Writes an integer in decimal.
+/// Two decimal digits for each value below 100.
+const DIGITS: &[u8; 200] = b"00010203040506070809101112131415161718192021222324252627282930313233343536373839404142434445464748495051525354555657585960616263646566676869707172737475767778798081828384858687888990919293949596979899";
+
+/// Writes an integer in decimal, two digits per step.
 pub(crate) fn write_int(i: i64, out: &mut Vec<u8>) {
     let mut buf = [0u8; 20];
     let mut n = i.unsigned_abs();
     let mut p = buf.len();
-    loop {
+    while n >= 100 {
+        let d = (n % 100) as usize * 2;
+        n /= 100;
+        p -= 2;
+        buf[p..p + 2].copy_from_slice(&DIGITS[d..d + 2]);
+    }
+    if n >= 10 {
+        let d = n as usize * 2;
+        p -= 2;
+        buf[p..p + 2].copy_from_slice(&DIGITS[d..d + 2]);
+    } else {
         p -= 1;
-        buf[p] = b'0' + (n % 10) as u8;
-        n /= 10;
-        if n == 0 {
-            break;
-        }
+        buf[p] = b'0' + n as u8;
     }
     if i < 0 {
         out.push(b'-');
@@ -103,9 +113,8 @@ struct Run<'a, 'o> {
     scratch: String,
     fallbacks: u32,
     failures: Vec<Failed>,
-    /// Where this render's output starts, and the most it may write.
-    start: usize,
-    limit: usize,
+    /// The output length past which the render stops: `start + limit`.
+    end: usize,
     /// The limit was passed: stop.
     over: bool,
 }
@@ -137,10 +146,10 @@ pub(crate) fn run(
         scratch: String::new(),
         fallbacks: 0,
         failures: Vec::new(),
-        start,
-        limit,
+        end: start.saturating_add(limit),
         over: false,
     };
+    r.out.reserve(program.estimate);
     r.nodes(&program.nodes);
     if r.over || r.out.len() - start > limit {
         r.out.truncate(start);
@@ -261,12 +270,22 @@ fn truthy(v: &Val<'_>) -> bool {
 impl<'a> Run<'a, '_> {
     fn nodes(&mut self, nodes: &'a [CNode]) {
         for n in nodes {
-            if self.over || self.out.len() - self.start > self.limit {
+            if self.out.len() > self.end {
                 self.over = true;
                 return;
             }
             match n {
                 CNode::Lit(s) => self.out.extend_from_slice(s.as_bytes()),
+                CNode::Field { base, ids, esc } => self.field(*base, ids, *esc),
+                CNode::LitField {
+                    lit,
+                    base,
+                    ids,
+                    esc,
+                } => {
+                    self.out.extend_from_slice(lit.as_bytes());
+                    self.field(*base, ids, *esc);
+                }
                 CNode::Out(e, esc) => {
                     let v = match self.field_path(e) {
                         Some(v) => Val::V(v),
@@ -286,7 +305,11 @@ impl<'a> Run<'a, '_> {
                 CNode::If(arms, otherwise) => {
                     let mut done = false;
                     for (c, body) in arms {
-                        if truthy(&self.eval(c)) {
+                        let yes = match self.field_path(c) {
+                            Some(v) => truthy(&Val::V(v)),
+                            None => truthy(&self.eval(c)),
+                        };
+                        if yes {
                             self.nodes(body);
                             done = true;
                             break;
@@ -682,6 +705,52 @@ impl<'a> Run<'a, '_> {
         }
     }
 
+    /// Reads a plain field path and writes it.
+    #[inline]
+    fn field(&mut self, base: Option<u16>, ids: &[FieldId], esc: Esc) {
+        let mut v = match base {
+            None => Value::View(self.root),
+            Some(s) => self.slots[usize::from(s)].value,
+        };
+        for id in ids {
+            v = match v {
+                Value::View(x) => x.field(*id),
+                _ => Value::Absent,
+            };
+        }
+        self.write_value(v, esc);
+    }
+
+    /// Writes a view's value: text and integers in the common places
+    /// directly, everything else through `write`.
+    #[inline]
+    fn write_value(&mut self, v: Value<'a>, esc: Esc) {
+        match (v, esc) {
+            (Value::Text(s), Esc::Text | Esc::Attr) => escape::html(s, self.out),
+            (Value::Text(s) | Value::Html(s), Esc::Raw) | (Value::Html(s), Esc::Text) => {
+                self.out.extend_from_slice(s.as_bytes());
+            }
+            (Value::Text(s), Esc::UrlStart) => {
+                if escape::url_allowed(s) {
+                    escape::url(s, self.out);
+                } else {
+                    self.out.extend_from_slice(escape::BLOCKED_URL.as_bytes());
+                }
+            }
+            (Value::Text(s), Esc::UrlPath) => escape::url(s, self.out),
+            (Value::Text(s), Esc::UrlOpen) => escape::url_open(s, self.out),
+            (Value::Text(s), Esc::UrlQuery) => escape::url_component(s, self.out),
+            (
+                Value::Int(i),
+                Esc::Text | Esc::Attr | Esc::Raw | Esc::UrlPath | Esc::UrlOpen | Esc::UrlQuery,
+            ) => {
+                write_int(i, self.out);
+            }
+            (Value::Absent, _) if !matches!(esc, Esc::Js { string: false, .. }) => {}
+            (v, esc) => self.write(Val::V(v), esc),
+        }
+    }
+
     fn write(&mut self, v: Val<'a>, esc: Esc) {
         if let Esc::Js { string: false, .. } = esc {
             // A whole JavaScript literal. Negative numbers get spaces so they
@@ -766,6 +835,7 @@ impl<'a> Run<'a, '_> {
                 }
             }
             Esc::UrlPath => escape::url(s, self.out),
+            Esc::UrlOpen => escape::url_open(s, self.out),
             Esc::UrlQuery => escape::url_component(s, self.out),
             Esc::Raw => self.out.extend_from_slice(s.as_bytes()),
             // JavaScript and CSS escaping leaves no byte HTML treats

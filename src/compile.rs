@@ -19,6 +19,9 @@ pub(crate) const MAX_EXTENDS_DEPTH: usize = 8;
 /// The most compiled nodes one template may have after includes are inlined.
 pub(crate) const MAX_NODES: usize = 1 << 20;
 
+/// The most literal text one template may have after includes are inlined.
+pub(crate) const MAX_LITERAL_BYTES: usize = 16 << 20;
+
 // ---------------------------------------------------------------------------
 // Compiled form
 // ---------------------------------------------------------------------------
@@ -34,6 +37,9 @@ pub(crate) enum Esc {
     UrlStart,
     /// Inside a URL, before the query: normalized.
     UrlPath,
+    /// Inside a URL whose scheme may still be open: normalized, with `:`
+    /// encoded.
+    UrlOpen,
     /// In the query or fragment: component-encoded.
     UrlQuery,
     /// `| raw`: as is.
@@ -111,6 +117,22 @@ pub(crate) enum CExpr {
 pub(crate) enum CNode {
     Lit(Box<str>),
     Out(CExpr, Esc),
+    /// An output that is a plain field path from the root (`base: None`) or
+    /// from a loop or `include ... with` slot: the common case, read without
+    /// the general evaluator.
+    Field {
+        base: Option<u16>,
+        ids: Box<[FieldId]>,
+        esc: Esc,
+    },
+    /// Literal text followed by a `Field`: the most common pair, walked as
+    /// one node.
+    LitField {
+        lit: Box<str>,
+        base: Option<u16>,
+        ids: Box<[FieldId]>,
+        esc: Esc,
+    },
     /// A view that renders itself. In HTML text it writes markup; anywhere
     /// else its text form, escaped for the place. `fallback` replaces the
     /// view's own fallback when it fails.
@@ -146,6 +168,30 @@ pub(crate) struct Program {
     pub nodes: Vec<CNode>,
     /// The deepest loop nesting: the number of loop slots a render needs.
     pub slots: usize,
+    /// The bytes of literal text, each loop body counted once: a render
+    /// reserves this much in the output up front.
+    pub estimate: usize,
+}
+
+/// The literal bytes of `nodes`, each body counted once.
+fn literal_bytes(nodes: &[CNode]) -> usize {
+    nodes
+        .iter()
+        .map(|n| match n {
+            CNode::Lit(s) | CNode::LitField { lit: s, .. } => s.len(),
+            CNode::If(arms, other) => arms
+                .iter()
+                .map(|(_, b)| literal_bytes(b))
+                .max()
+                .unwrap_or(0)
+                .max(literal_bytes(other)),
+            CNode::For {
+                body, otherwise, ..
+            } => literal_bytes(body).max(literal_bytes(otherwise)),
+            CNode::Try(body, _) | CNode::Bind { body, .. } => literal_bytes(body),
+            _ => 0,
+        })
+        .sum()
 }
 
 // ---------------------------------------------------------------------------
@@ -259,6 +305,8 @@ struct Compiler<'s> {
     /// Includes being compiled: (template, offset of the include tag).
     stack: Vec<(usize, usize)>,
     nodes: usize,
+    /// Literal bytes compiled for the current template, includes inlined.
+    literal: usize,
     slots: usize,
     frames: Vec<Frame<'s>>,
 }
@@ -294,6 +342,62 @@ fn collect_blocks<'s>(nodes: &'s [Node], out: &mut Vec<(&'s str, usize, &'s [Nod
             _ => {}
         }
     }
+}
+
+/// Merges each run of adjacent literals into one, in time linear in their
+/// length.
+fn merge_literals(nodes: Vec<CNode>) -> Vec<CNode> {
+    if !nodes
+        .windows(2)
+        .any(|w| matches!(w, [CNode::Lit(_), CNode::Lit(_)]))
+    {
+        return nodes;
+    }
+    let mut out = Vec::with_capacity(nodes.len());
+    let mut run: Option<String> = None;
+    for n in nodes {
+        match n {
+            CNode::Lit(s) => match &mut run {
+                Some(r) => r.push_str(&s),
+                None => run = Some(s.into_string()),
+            },
+            n => {
+                if let Some(r) = run.take() {
+                    out.push(CNode::Lit(r.into_boxed_str()));
+                }
+                out.push(n);
+            }
+        }
+    }
+    if let Some(r) = run {
+        out.push(CNode::Lit(r.into_boxed_str()));
+    }
+    out
+}
+
+/// Folds each literal followed by a plain field output into one node.
+fn fuse(nodes: Vec<CNode>) -> Vec<CNode> {
+    let mut out = Vec::with_capacity(nodes.len());
+    let mut it = nodes.into_iter().peekable();
+    while let Some(n) = it.next() {
+        if let CNode::Lit(lit) = n {
+            if matches!(it.peek(), Some(CNode::Field { .. })) {
+                if let Some(CNode::Field { base, ids, esc }) = it.next() {
+                    out.push(CNode::LitField {
+                        lit,
+                        base,
+                        ids,
+                        esc,
+                    });
+                    continue;
+                }
+            }
+            out.push(CNode::Lit(lit));
+        } else {
+            out.push(n);
+        }
+    }
+    out
 }
 
 /// Where a node starts, for error messages.
@@ -360,6 +464,7 @@ impl<'s> Compiler<'s> {
             vars: Vec::new(),
         };
         self.nodes = 0;
+        self.literal = 0;
         self.slots = 0;
         let before = self.diags.len();
         let (root, frame) = self.layout(t)?;
@@ -383,10 +488,21 @@ impl<'s> Compiler<'s> {
                 0,
                 "the template is too large once its includes are inlined",
             );
+        } else if self.literal > MAX_LITERAL_BYTES {
+            self.error(
+                t,
+                0,
+                format!(
+                    "the template has more than {} MiB of text once its includes are inlined",
+                    MAX_LITERAL_BYTES >> 20
+                ),
+            );
         }
+        let estimate = literal_bytes(&nodes);
         (self.diags.len() == before).then_some(Program {
             nodes,
             slots: self.slots,
+            estimate,
         })
     }
 
@@ -526,21 +642,18 @@ impl<'s> Compiler<'s> {
         let vars_before = scope.vars.len();
         for node in nodes {
             self.nodes += 1;
-            if self.nodes > MAX_NODES {
+            if self.nodes > MAX_NODES || self.literal > MAX_LITERAL_BYTES {
                 break;
             }
             match node {
                 Node::Text(r) => {
                     let text = &self.sources[t].src[r.clone()];
-                    ctx.feed(text.as_bytes());
-                    if let Some(CNode::Lit(prev)) = out.last_mut() {
-                        let mut s = String::with_capacity(prev.len() + text.len());
-                        s.push_str(prev);
-                        s.push_str(text);
-                        *prev = s.into_boxed_str();
-                    } else {
-                        out.push(CNode::Lit(text.into()));
+                    if let Some(why) = ctx.feed(text.as_bytes()) {
+                        self.error(t, r.start, why);
                     }
+                    self.literal += text.len();
+                    // Adjacent literals are merged once, at the end.
+                    out.push(CNode::Lit(text.into()));
                 }
                 Node::Out(e) => {
                     if let Some(n) = self.output(t, e, ctx, scope) {
@@ -726,17 +839,7 @@ impl<'s> Compiler<'s> {
                     let _ = self.frames.pop();
                     let _ = self.stack.pop();
                     ctx = end;
-                    for n in inner {
-                        match (out.last_mut(), n) {
-                            (Some(CNode::Lit(prev)), CNode::Lit(s)) => {
-                                let mut joined = String::with_capacity(prev.len() + s.len());
-                                joined.push_str(prev);
-                                joined.push_str(&s);
-                                *prev = joined.into_boxed_str();
-                            }
-                            (_, n) => out.push(n),
-                        }
-                    }
+                    out.extend(inner);
                 }
                 Node::Set {
                     name,
@@ -830,7 +933,7 @@ impl<'s> Compiler<'s> {
             }
         }
         scope.vars.truncate(vars_before);
-        (out, ctx)
+        (fuse(merge_literals(out)), ctx)
     }
 
     fn join_all(&mut self, t: usize, at: usize, start: Ctx, ends: &[Ctx], what: &str) -> Ctx {
@@ -853,6 +956,29 @@ impl<'s> Compiler<'s> {
             }
         }
         j
+    }
+
+    /// `Out`, or `Field` when the expression is a plain field path whose
+    /// base never holds built text (a `set` value may).
+    fn out_node(ce: CExpr, esc: Esc, scope: &Scope) -> CNode {
+        let (base, steps) = match &ce {
+            CExpr::Root(steps) => (None, steps),
+            CExpr::Slot(s, steps) if !scope.vars.iter().any(|v| v.slot == *s && !v.is_loop) => {
+                (Some(*s), steps)
+            }
+            _ => return CNode::Out(ce, esc),
+        };
+        let ids: Option<Box<[FieldId]>> = steps
+            .iter()
+            .map(|st| match st {
+                Step::Field(id) => Some(*id),
+                Step::Call(..) => None,
+            })
+            .collect();
+        match ids {
+            Some(ids) => CNode::Field { base, ids, esc },
+            None => CNode::Out(ce, esc),
+        }
     }
 
     fn output(&mut self, t: usize, e: &Expr, ctx: Ctx, scope: &Scope) -> Option<CNode> {
@@ -896,6 +1022,7 @@ impl<'s> Compiler<'s> {
             Slot::Attr => Esc::Attr,
             Slot::Url(UrlPart::Start) => Esc::UrlStart,
             Slot::Url(UrlPart::Path) => Esc::UrlPath,
+            Slot::Url(UrlPart::Open) => Esc::UrlOpen,
             Slot::Url(UrlPart::Query) => Esc::UrlQuery,
             Slot::Js { string, attr } => Esc::Js { string, attr },
             Slot::Css { string, attr } => Esc::Css { string, attr },
@@ -957,9 +1084,9 @@ impl<'s> Compiler<'s> {
             if !matches!(ty, Ty::Text | Ty::Html | Ty::Unknown) {
                 self.error(t, e.at, "`raw` applies to text");
             }
-            return Some(CNode::Out(ce, Esc::Raw));
+            return Some(Self::out_node(ce, Esc::Raw, scope));
         }
-        Some(CNode::Out(ce, esc))
+        Some(Self::out_node(ce, esc, scope))
     }
 
     fn cond(&mut self, t: usize, e: &Expr, scope: &Scope) -> CExpr {
@@ -1504,6 +1631,7 @@ pub(crate) fn compile_all(
         diags,
         stack: Vec::new(),
         nodes: 0,
+        literal: 0,
         slots: 0,
         frames: Vec::new(),
     };

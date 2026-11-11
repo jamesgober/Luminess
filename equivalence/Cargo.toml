@@ -1,0 +1,19 @@
+[package]
+name = "luminess-equivalence"
+version = "0.0.0"
+publish = false
+edition = "2024"
+description = "Checks that this tree renders exactly what a published release does"
+
+# The release a change must match byte for byte. Kept out of luminess's own
+# dependency tree: this crate is its own workspace.
+[dependencies]
+luminess = { path = ".." }
+luminess_base = { package = "luminess", version = "=0.9.2" }
+
+[dev-dependencies]
+proptest = { version = "1", default-features = false, features = ["std"] }
+
+# Keeps this crate out of any parent workspace.
+[workspace]
+members = ["."]

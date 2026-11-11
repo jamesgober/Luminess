@@ -20,17 +20,22 @@ text, so `grep '| raw'` lists every place a theme writes unescaped output.
 ## How the escaper is chosen
 
 The compiler follows the HTML around each `{{ }}` with a small tokenizer
-(text, tags, attribute names and values, comments, declarations, and the
-raw-text elements `script`, `style`, `title`, and `textarea`), and inside
-scripts and styles a JavaScript and a CSS tracker. The escaper is fixed per
-output at compile time:
+(text, tags, attribute names and values, comments with every way the HTML
+parser ends one, declarations, and the raw-text and RCDATA elements
+`script`, `style`, `title`, `textarea`, `xmp`, `iframe`, `noembed`,
+`noframes`, `noscript`, and `plaintext`), and inside scripts and styles a
+JavaScript and a CSS tracker. The JavaScript tracker reads `<!--` and, at the
+start of a line, `-->` as line comments, as browsers do, and a string that
+reaches a line break as broken. The escaper is fixed per output at compile
+time:
 
 | Place | Guarantee |
 |---|---|
 | HTML text | the value cannot open a tag, an entity, or a comment: `& < > " '` become entities |
 | quoted attribute value | the value cannot leave the quotes; the same five characters become entities |
-| `<title>`, `<textarea>` | as HTML text; the element cannot be closed |
-| start of a URL attribute | only `http`, `https`, `mailto`, `tel`, and relative URLs pass (leading spaces, control characters, and tabs or line breaks inside the scheme are seen through, as browsers do); anything else becomes `#blocked`; then bytes a URL does not allow are percent-encoded and `&` becomes `&amp;` |
+| `<title>`, `<textarea>`, and the other raw-text elements | as HTML text; the element cannot be closed |
+| start of a URL attribute (only whitespace before it) | only `http`, `https`, `mailto`, `tel`, and relative URLs pass (leading spaces, control characters, and tabs or line breaks inside the scheme are seen through, as browsers do); anything else becomes `#blocked`; then bytes a URL does not allow are percent-encoded and `&` becomes `&amp;` |
+| a URL whose scheme may still be open (after other text or output, before the first `/`, `?`, or `#`) | as later in a URL, and `:` is percent-encoded too, so the value cannot complete a scheme |
 | later in a URL, before `?` | percent-encoded where a URL does not allow the byte; a stray `%` becomes `%25` |
 | after `?` or `#` in a URL | every byte other than letters, digits, and `- . _ ~` is percent-encoded |
 | JavaScript code | a complete literal: a double-quoted string, a number (negative numbers spaced so they cannot join an operator), `true`, `false`, or `null` |
@@ -49,10 +54,18 @@ element.
 Output in an unquoted attribute value, a tag name, an attribute name, an HTML
 comment, a `<!...>` declaration, `srcdoc`, a JavaScript comment or regular
 expression, right after `/` or a backslash in JavaScript or CSS, right after
-`$` in a template literal, and in a CSS comment. Branches of an `if`, the body
-and `else` of a `for`, and the body and fallback of a `try` must end in the
-same place (two places in one URL attribute join to the stricter). A template
-must not end inside a tag, attribute, comment, script, or style.
+`$` in a template literal, and in a CSS comment. A literal `:` or `&` after an
+output, before a URL's first `/`, `?`, or `#`, is refused too: the output
+could supply a scheme that the template's text completes. Branches of an `if`,
+the body and `else` of a `for`, and the body and fallback of a `try` must end
+in the same place (two places in one URL attribute join to what is safe for
+both). A template must not end inside a tag, attribute, comment, script, or
+style.
+
+A template added with `Builder::template_with` is compiled against its own
+schema. It can be rendered by name only when that schema reads the engine's
+view type the same way (the same fields at the same positions); otherwise it
+is only for `include ... with`, and rendering it by name finds no template.
 
 ## Known limits
 
@@ -63,12 +76,24 @@ These are accepted, documented trade-offs, not oversights:
   read as a division (as Go's `html/template` does). A regular expression
   right after `)` with a quote inside it (`if (a) /'/.test(s)`) would mislead
   the tracker. Write such code in a `.js` file, or wrap the expression in
-  parentheses.
+  parentheses. After `++` and `--` the tracker reads `/` as it read it before
+  them: a division after a postfix operator, a regular expression after a
+  prefix one.
+- **`noscript`** is read as raw text, as browsers do with scripting on. With
+  scripting off its content is parsed as HTML, where no script runs.
 - **`<meta http-equiv="refresh" content="...">`.** `content` is escaped as a
   plain attribute; a URL in it is not checked. Never put visitor input there.
 - **`srcset`.** The scheme is checked only at the start of the value; image
   candidates after the first are normalized but not checked. Browsers do not
   run script from image URLs.
+- **SVG animation.** `animate` and `set` write `values`, `to`, `from`, and
+  `by` into the attribute `attributeName` names, which may be an `href`;
+  those are escaped as plain attributes. Never put visitor input there.
+- **A valid URL can still load something.** The scheme check stops
+  `javascript:` and its kin; it cannot know whether an `https` URL is one the
+  site meant. In `<script src>`, `<iframe src>`, `<link href>`,
+  `<base href>`, `<object data>`, and CSS `@import` or `url()`, a visitor's
+  `https` URL is as dangerous as script. Never put visitor input there.
 - **Template literals** nested more than 4 `${` deep are not followed; output
   inside them is refused.
 - **Trusted markup is trusted.** `html` fields and `| raw` are written as
@@ -77,11 +102,14 @@ These are accepted, documented trade-offs, not oversights:
 ## Denial of service
 
 Templates are compiled once, at startup, under limits: statements and
-expressions nest at most 64 deep, includes and `extends` chains at most 8,
-one template compiles to at most about a million nodes, and a source is at
-most 1 MiB (`Builder::max_template_size`). A render's output can be capped
-with `Builder::max_output`. Rendering never recurses deeper than the
-template's own nesting, and every loop runs over a list the view returns.
+expressions nest at most 64 deep (each `and`, `or`, and filter in a chain
+counting as a level, so compiling never recurses deeper than that), includes
+and `extends` chains at most 8, one template compiles to at most about a
+million nodes and 16 MiB of text with its includes inlined, and a source is
+at most 1 MiB (`Builder::max_template_size`). Compile time is linear in the
+size of the compiled template. A render's output can be capped with
+`Builder::max_output`. Rendering never recurses deeper than the compiled
+expression nesting, and every loop runs over a list the view returns.
 
 ## Reporting a problem
 

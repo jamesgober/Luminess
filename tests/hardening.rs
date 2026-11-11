@@ -1,0 +1,378 @@
+//! Places where the tracker must read a template the way a browser does, and
+//! limits that keep compiling a hostile template bounded. Each case renders a
+//! value that would run as script if the tracker lost its place.
+
+use std::time::{Duration, Instant};
+
+use luminess::{Engine, RenderErrorKind, Schema};
+
+struct P {
+    v: String,
+    w: String,
+}
+luminess::view!(P as "p" { v: text, w: text });
+
+const JS: &str = "javascript:alert(1)";
+const CODE: &str = "alert(document.domain)";
+
+fn engine(tpl: &str) -> Result<Engine<P>, String> {
+    Engine::<P>::builder()
+        .template("t", tpl)
+        .build()
+        .map_err(|e| e.to_string())
+}
+
+fn render(tpl: &str, v: &str, w: &str) -> Result<String, String> {
+    let e = engine(tpl)?;
+    e.render_to_string(
+        "t",
+        &P {
+            v: v.into(),
+            w: w.into(),
+        },
+    )
+    .map_err(|e| e.to_string())
+}
+
+fn ok(tpl: &str, v: &str, w: &str) -> String {
+    render(tpl, v, w).unwrap_or_else(|e| panic!("{tpl:?} failed: {e}"))
+}
+
+fn refused(tpl: &str) -> String {
+    match engine(tpl) {
+        Ok(_) => panic!("{tpl:?} compiled"),
+        Err(e) => e,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// URL attributes
+// ---------------------------------------------------------------------------
+
+#[test]
+fn url_whitespace_before_the_output_keeps_the_scheme_check() {
+    for tpl in [
+        "<a href=\" {{ p.v }}\">x</a>",
+        "<a href=\"\n    {{ p.v }}\n  \">x</a>",
+        "<a href=\"\t{{ p.v }}\">x</a>",
+    ] {
+        let out = ok(tpl, JS, "");
+        assert!(out.contains("#blocked"), "{tpl:?}: {out}");
+        assert!(!out.contains("javascript:"), "{tpl:?}: {out}");
+    }
+}
+
+#[test]
+fn url_second_output_cannot_finish_a_scheme() {
+    let tpl = r#"<a href="{{ p.w }}{{ p.v }}">x</a>"#;
+    for (v, w) in [
+        (JS, ""),
+        (":alert(1)", "javascript"),
+        ("script:alert(1)", "java"),
+    ] {
+        let out = ok(tpl, v, w);
+        assert!(!out.contains("javascript:"), "{v:?} {w:?}: {out}");
+    }
+    assert_eq!(ok(tpl, JS, ""), r#"<a href="javascript%3Aalert(1)">x</a>"#);
+    // A literal before the output does not settle the scheme either.
+    let out = ok(r#"<a href="java{{ p.v }}">x</a>"#, "script:alert(1)", "");
+    assert!(!out.contains("javascript:"), "{out}");
+}
+
+#[test]
+fn url_scheme_completed_by_the_template_is_refused() {
+    for tpl in [
+        r#"<a href="{{ p.w }}:{{ p.v }}">x</a>"#,
+        r#"<a href="{{ p.w }}://{{ p.v }}">x</a>"#,
+        r#"<a href="{{ p.w }}&#58;{{ p.v }}">x</a>"#,
+        r#"<a href="{{ p.w }}:x">x</a>"#,
+        r#"<a href="{% if p.v %}?{% endif %}{{ p.w }}:x">x</a>"#,
+    ] {
+        let e = refused(tpl);
+        assert!(e.contains("scheme"), "{tpl:?}: {e}");
+    }
+}
+
+#[test]
+fn url_common_forms_are_unchanged() {
+    let page = |v: &str, w: &str| P {
+        v: v.into(),
+        w: w.into(),
+    };
+    let e = Engine::<P>::builder()
+        .template("abs", r#"<a href="https://{{ p.w }}/x/{{ p.v }}">x</a>"#)
+        .template("mail", r#"<a href="mailto:{{ p.v }}">x</a>"#)
+        .template("base", r#"<a href="{{ p.w }}/{{ p.v }}">x</a>"#)
+        .template("rel", r#"<a href="/x/{{ p.v }}:{{ p.w }}">x</a>"#)
+        .template("query", r#"<a href="?q={{ p.v }}">x</a>"#)
+        .template(
+            "maybe",
+            r#"<a href="{% if p.w %}?q={{ p.w }}{% endif %}">x</a>"#,
+        )
+        .template("one", r#"<a href="{{ p.v }}">x</a>"#)
+        .build()
+        .unwrap();
+    assert_eq!(
+        e.render_to_string("abs", &page("a b", "example.com"))
+            .unwrap(),
+        r#"<a href="https://example.com/x/a%20b">x</a>"#
+    );
+    assert_eq!(
+        e.render_to_string("mail", &page("me@example.com", ""))
+            .unwrap(),
+        r#"<a href="mailto:me@example.com">x</a>"#
+    );
+    assert_eq!(
+        e.render_to_string("base", &page("y", "https://example.com"))
+            .unwrap(),
+        r#"<a href="https://example.com/y">x</a>"#
+    );
+    assert_eq!(
+        e.render_to_string("rel", &page("a", "b")).unwrap(),
+        r#"<a href="/x/a:b">x</a>"#
+    );
+    assert_eq!(
+        e.render_to_string("query", &page("a&b", "")).unwrap(),
+        r#"<a href="?q=a%26b">x</a>"#
+    );
+    assert_eq!(
+        e.render_to_string("maybe", &page("", "1")).unwrap(),
+        r#"<a href="?q=1">x</a>"#
+    );
+    assert_eq!(
+        e.render_to_string("one", &page("https://example.com/a", ""))
+            .unwrap(),
+        r#"<a href="https://example.com/a">x</a>"#
+    );
+    assert_eq!(
+        e.render_to_string("one", &page(JS, "")).unwrap(),
+        r##"<a href="#blocked">x</a>"##
+    );
+}
+
+#[test]
+fn url_after_a_branch_is_still_checked() {
+    let out = ok(
+        r#"<a href="{% if p.w %}/x{% endif %}{{ p.v }}">x</a>"#,
+        JS,
+        "",
+    );
+    assert!(out.contains("#blocked"), "{out}");
+}
+
+// ---------------------------------------------------------------------------
+// HTML comments and raw-text elements
+// ---------------------------------------------------------------------------
+
+#[test]
+fn every_comment_closer_ends_a_comment() {
+    for open in ["<!-->", "<!--->", "<!-- x --!>", "<!-- x -->"] {
+        let tpl = format!("{open}\n<script>\n-->\n{{{{ p.v }}}}\n</script>");
+        let out = ok(&tpl, CODE, "");
+        assert!(
+            out.contains("\"alert(document.domain)\""),
+            "{open:?}: {out}"
+        );
+    }
+    // Still inside: output refused.
+    let _ = refused("<!-- x --!{{ p.v }} -->");
+    let _ = refused("<!-- x -- {{ p.v }} -->");
+}
+
+#[test]
+fn raw_text_elements_are_raw_text() {
+    for el in ["xmp", "noscript", "iframe", "noembed", "noframes"] {
+        let tpl = format!("<{el}><p title='</{el}><img src=x onerror=\"'>{{{{ p.v }}}}\"></{el}>");
+        let out = ok(&tpl, "';alert(document.domain)//", "");
+        assert!(!out.contains("&#39;;alert"), "{el}: {out}");
+        assert!(!out.contains("';alert"), "{el}: {out}");
+    }
+    // The browser is in a script after `</noscript><script>`: the value is
+    // escaped for it, or the template is refused for ending inside it.
+    if let Ok(out) = render(
+        "<noscript><p title=\"</noscript><script>\">{{ p.v }}</p></noscript>",
+        "alert(document.domain)//",
+        "",
+    ) {
+        assert!(!out.contains("alert(document.domain)//"), "{out}");
+    }
+    // Output in raw text is escaped, so it cannot end the element.
+    assert_eq!(
+        ok("<noscript>{{ p.v }}</noscript>", "</noscript><b>", ""),
+        "<noscript>&lt;/noscript&gt;&lt;b&gt;</noscript>"
+    );
+    // Plain text runs to the end of the document: its end tag ends nothing,
+    // so the template ends inside it.
+    let e = refused("<plaintext></plaintext><b>{{ p.v }}");
+    assert!(e.contains("raw-text element"), "{e}");
+}
+
+// ---------------------------------------------------------------------------
+// Scripts
+// ---------------------------------------------------------------------------
+
+#[test]
+fn html_like_comments_in_scripts_are_comments() {
+    for tpl in [
+        "<script>\n<!-- don't run on old browsers\nvar n = {{ p.v }};\n</script>",
+        "<script>\n<!-- `\nvar n = {{ p.v }};\n</script>",
+        "<script>x = 1;\n  --> it's a comment\nvar n = {{ p.v }};\n</script>",
+    ] {
+        let out = ok(tpl, CODE, "");
+        assert!(
+            out.contains("var n = \"alert(document.domain)\";"),
+            "{tpl:?}: {out}"
+        );
+    }
+    // In the middle of a line `-->` is `--` and `>`.
+    let out = ok("<script>while (x-->0) go({{ p.v }});</script>", CODE, "");
+    assert!(out.contains("go(\"alert(document.domain)\")"), "{out}");
+}
+
+#[test]
+fn a_string_does_not_run_past_a_line_break() {
+    let e = refused("<script>var s = 'a\nvar n = {{ p.v }};</script>");
+    assert!(e.contains("cannot follow"), "{e}");
+}
+
+#[test]
+fn line_separators_end_a_line_comment() {
+    let out = ok(
+        "<script>// note\u{2028}var s = {{ p.v }};</script>",
+        CODE,
+        "",
+    );
+    assert!(out.contains("var s = \"alert(document.domain)\";"), "{out}");
+}
+
+#[test]
+fn division_after_postfix_increment() {
+    let out = ok(
+        r#"<script>var a = i++ / 2, b = "/"; go({{ p.v }});</script>"#,
+        CODE,
+        "",
+    );
+    assert!(out.contains("go(\"alert(document.domain)\")"), "{out}");
+    let out = ok(
+        r#"<script>var a = i-- / 2, b = "/"; go({{ p.v }});</script>"#,
+        CODE,
+        "",
+    );
+    assert!(out.contains("go(\"alert(document.domain)\")"), "{out}");
+    // A prefix `++` is followed by an operand: `/` starts a regex there.
+    let _ = refused("<script>x = ++ /a{{ p.v }}/</script>");
+}
+
+#[test]
+fn branches_ending_in_the_same_string_join() {
+    let out = ok(
+        r#"<script>{% if p.w %}x = "{% else %}y = "{% endif %}{{ p.v }}";</script>"#,
+        "a\"b",
+        "",
+    );
+    assert_eq!(out, r#"<script>y = "a\u0022b";</script>"#);
+}
+
+// ---------------------------------------------------------------------------
+// Compile-time limits
+// ---------------------------------------------------------------------------
+
+fn on_stack<T: Send + 'static>(stack: usize, f: impl FnOnce() -> T + Send + 'static) -> T {
+    std::thread::Builder::new()
+        .stack_size(stack)
+        .spawn(f)
+        .unwrap()
+        .join()
+        .unwrap()
+}
+
+#[test]
+fn long_operator_chains_are_errors_not_crashes() {
+    for (n, op) in [
+        (5_000usize, " or p.v"),
+        (20_000, " and p.v"),
+        (5_000, " | upper"),
+    ] {
+        let tpl = if op.starts_with(" |") {
+            format!("{{{{ p.v{} }}}}", op.repeat(n))
+        } else {
+            format!("{{% if p.v{} %}}x{{% endif %}}", op.repeat(n))
+        };
+        let e = on_stack(1 << 20, move || {
+            Engine::<P>::builder()
+                .template("t", tpl)
+                .check()
+                .map_err(|e| e.to_string())
+        });
+        let e = e.unwrap_err();
+        assert!(e.contains("too long"), "{e}");
+    }
+    // A chain of reasonable length still compiles.
+    let tpl = format!("{{% if p.v{} %}}x{{% endif %}}", " or p.v".repeat(40));
+    assert_eq!(ok(&tpl, "1", ""), "x");
+}
+
+#[test]
+fn includes_cannot_amplify_without_bound() {
+    let part = "x".repeat(64 << 10);
+    let main = r#"{% include "part" %}"#.repeat(1_000);
+    let t = Instant::now();
+    let r = Engine::<P>::builder()
+        .template("part", part)
+        .template("t", main)
+        .build();
+    assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
+    let e = r.unwrap_err().to_string();
+    assert!(e.contains("MiB of text"), "{e}");
+}
+
+#[test]
+fn many_literal_pieces_compile_in_linear_time() {
+    let tpl = "ab{##}".repeat(80_000);
+    let t = Instant::now();
+    let out = ok(&tpl, "", "");
+    assert!(t.elapsed() < Duration::from_secs(2), "{:?}", t.elapsed());
+    assert_eq!(out.len(), 160_000);
+}
+
+// ---------------------------------------------------------------------------
+// Templates with their own schema
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_template_with_another_schema_is_not_rendered_with_the_wrong_view() {
+    let other = Schema::build("x").text("title").finish();
+    let e = Engine::<P>::builder()
+        .template_with("card", "<h1>{{ x.title }}</h1>", other)
+        .template("t", "ok")
+        .build()
+        .unwrap();
+    let err = e
+        .render_to_string(
+            "card",
+            &P {
+                v: "secret".into(),
+                w: String::new(),
+            },
+        )
+        .unwrap_err();
+    assert_eq!(err.kind(), RenderErrorKind::NotFound);
+
+    // A schema the view does answer (a prefix of it) renders by name.
+    let prefix = Schema::build("p").text("v").finish();
+    let e = Engine::<P>::builder()
+        .template_with("short", "<b>{{ p.v }}</b>", prefix)
+        .build()
+        .unwrap();
+    assert_eq!(
+        e.render_to_string(
+            "short",
+            &P {
+                v: "a".into(),
+                w: String::new()
+            }
+        )
+        .unwrap(),
+        "<b>a</b>"
+    );
+}

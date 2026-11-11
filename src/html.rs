@@ -21,22 +21,107 @@ pub(crate) enum AttrKind {
     Html,
 }
 
-/// Where in a URL attribute value the output sits.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// How an output in a URL attribute value is escaped, from the least strict
+/// to the most.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum UrlPart {
-    /// Nothing written yet: the scheme is checked.
-    Start,
-    /// After the start, before `?` or `#`.
+    /// After the scheme, before `?` or `#`: normalized.
     Path,
+    /// Nothing but whitespace written yet: the scheme is checked.
+    Start,
+    /// The scheme may still be open after text already written: normalized,
+    /// and `:` encoded, so the value cannot finish a scheme.
+    Open,
     /// After `?` or `#`: every reserved character is encoded.
     Query,
+}
+
+/// Where in a URL attribute value the template is.
+///
+/// A browser takes the scheme from the text before the first `:`, after
+/// stripping leading whitespace and control characters and ignoring tabs
+/// and line breaks. So the tracker follows whether that part may still be
+/// open, and whether an output was written while it was: a value written
+/// there may supply the letters of a scheme, and a literal `:` (or a
+/// character reference, which may be one) after it would complete it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Url {
+    pub part: UrlPart,
+    /// The scheme may still be open: no `:`, `/`, `?`, or `#` yet.
+    open: bool,
+    /// An output was written while the scheme was open.
+    valued: bool,
+    /// A literal `:` or `&` came after such an output: a compile error.
+    broken: bool,
+}
+
+impl Url {
+    const START: Self = Self {
+        part: UrlPart::Start,
+        open: true,
+        valued: false,
+        broken: false,
+    };
+
+    fn step(mut self, c: u8) -> Self {
+        if self.broken {
+            return self;
+        }
+        if !self.open {
+            if matches!(c, b'?' | b'#') {
+                self.part = UrlPart::Query;
+            }
+            return self;
+        }
+        match c {
+            b'?' | b'#' => {
+                self.open = false;
+                self.part = UrlPart::Query;
+            }
+            b':' | b'&' if self.valued => self.broken = true,
+            b':' | b'/' => {
+                self.open = false;
+                if self.part != UrlPart::Query {
+                    self.part = UrlPart::Path;
+                }
+            }
+            // What a browser strips before the scheme.
+            0..=0x20 => {}
+            _ => {
+                if self.part == UrlPart::Start {
+                    self.part = UrlPart::Open;
+                }
+            }
+        }
+        self
+    }
+
+    fn after_output(mut self) -> Self {
+        if self.open {
+            self.valued = true;
+            if self.part == UrlPart::Start {
+                self.part = UrlPart::Open;
+            }
+        }
+        self
+    }
+
+    /// Where two branches meet: what is safe for both.
+    fn join(self, other: Self) -> Self {
+        Self {
+            part: self.part.max(other.part),
+            open: self.open || other.open,
+            valued: self.valued || other.valued,
+            broken: self.broken || other.broken,
+        }
+    }
 }
 
 /// What an attribute value or raw-text element holds, as far as read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Sub {
     None,
-    Url(UrlPart),
+    Url(Url),
     Js(Js),
     Css(Css),
     /// A `&` in an `on*` value: a character reference would change what the
@@ -46,22 +131,49 @@ pub(crate) enum Sub {
     CssAmp(Css),
 }
 
-/// An element whose content is not parsed as HTML.
+/// An element whose content is not parsed as HTML: raw text and RCDATA, as
+/// the HTML parser reads them (`noscript` as with scripting on).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RawElem {
     Script,
     Style,
     Title,
     Textarea,
+    Xmp,
+    Iframe,
+    Noembed,
+    Noframes,
+    Noscript,
+    /// Raw text to the end of the document.
+    Plaintext,
 }
 
 impl RawElem {
+    const ALL: [Self; 10] = [
+        Self::Script,
+        Self::Style,
+        Self::Title,
+        Self::Textarea,
+        Self::Xmp,
+        Self::Iframe,
+        Self::Noembed,
+        Self::Noframes,
+        Self::Noscript,
+        Self::Plaintext,
+    ];
+
     fn name(self) -> &'static [u8] {
         match self {
             Self::Script => b"script",
             Self::Style => b"style",
             Self::Title => b"title",
             Self::Textarea => b"textarea",
+            Self::Xmp => b"xmp",
+            Self::Iframe => b"iframe",
+            Self::Noembed => b"noembed",
+            Self::Noframes => b"noframes",
+            Self::Noscript => b"noscript",
+            Self::Plaintext => b"plaintext",
         }
     }
 }
@@ -140,14 +252,31 @@ pub(crate) enum Ctx {
     Bang { dashes: u8 },
     /// Inside `<!...>` or `<?...>`.
     Decl,
-    /// Inside `<!-- -->`; `dashes` counts the `-` just read.
-    Comment { dashes: u8 },
+    /// Inside `<!-- -->`, in one of the HTML tokenizer's comment states.
+    Comment { st: CommentSt },
     /// Inside a raw-text element; `matched` counts the bytes of `</name` read.
     Raw {
         elem: RawElem,
         matched: u8,
         sub: Sub,
     },
+}
+
+/// The HTML tokenizer's comment states: a comment ends at `-->`, at `--!>`,
+/// and, right after it opens, at `>` or `->` (`<!-->`, `<!--->`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CommentSt {
+    /// Right after `<!--`.
+    Start,
+    /// After `<!---`.
+    StartDash,
+    Body,
+    /// After one `-`.
+    EndDash,
+    /// After `--`.
+    End,
+    /// After `--!`.
+    EndBang,
 }
 
 /// What a `{{ }}` at this place writes, or why it cannot.
@@ -169,14 +298,7 @@ pub(crate) enum Slot {
 }
 
 fn raw_elem(tag: &Name) -> Option<RawElem> {
-    [
-        RawElem::Script,
-        RawElem::Style,
-        RawElem::Title,
-        RawElem::Textarea,
-    ]
-    .into_iter()
-    .find(|e| tag.is(e.name()))
+    RawElem::ALL.into_iter().find(|e| tag.is(e.name()))
 }
 
 fn attr_kind(attr: &Name) -> AttrKind {
@@ -204,7 +326,7 @@ fn attr_kind(attr: &Name) -> AttrKind {
 
 fn sub_for(kind: AttrKind) -> Sub {
     match kind {
-        AttrKind::Url => Sub::Url(UrlPart::Start),
+        AttrKind::Url => Sub::Url(Url::START),
         AttrKind::Script => Sub::Js(Js::START),
         AttrKind::Style => Sub::Css(Css::Code),
         AttrKind::Text | AttrKind::Html => Sub::None,
@@ -225,10 +347,7 @@ impl Sub {
     fn step(self, c: u8, attr: bool) -> Self {
         match self {
             Self::None => Self::None,
-            Self::Url(url) => Self::Url(match (url, c) {
-                (_, b'?' | b'#') | (UrlPart::Query, _) => UrlPart::Query,
-                _ => UrlPart::Path,
-            }),
+            Self::Url(url) => Self::Url(url.step(c)),
             Self::Js(js) => {
                 if attr && c == b'&' {
                     Self::JsAmp(js)
@@ -265,12 +384,9 @@ impl Sub {
             return Some(self);
         }
         match (self, other) {
-            // Two places in one URL join to the stricter, so an output after
-            // them is never under-escaped.
-            (Self::Url(a), Self::Url(b)) => Some(Self::Url(match (a, b) {
-                (UrlPart::Query, _) | (_, UrlPart::Query) => UrlPart::Query,
-                _ => UrlPart::Start,
-            })),
+            // Two places in one URL join to what is safe for both, so an
+            // output after them is never under-escaped.
+            (Self::Url(a), Self::Url(b)) => Some(Self::Url(a.join(b))),
             (Self::Js(a), Self::Js(b)) => a.join(b).map(Self::Js),
             _ => None,
         }
@@ -278,7 +394,7 @@ impl Sub {
 
     fn after_output(self) -> Self {
         match self {
-            Self::Url(UrlPart::Start) => Self::Url(UrlPart::Path),
+            Self::Url(url) => Self::Url(url.after_output()),
             Self::Js(js) => Self::Js(js.after_value()),
             other => other,
         }
@@ -301,9 +417,11 @@ impl Sub {
             JsMode::Regex | JsMode::RegexEsc | JsMode::RegexClass | JsMode::RegexClassEsc => {
                 Slot::Refused("output inside a JavaScript regular expression")
             }
-            JsMode::LineComment | JsMode::BlockComment | JsMode::BlockCommentStar => {
-                Slot::Refused("output inside a JavaScript comment")
-            }
+            JsMode::LineComment
+            | JsMode::LineCommentE2
+            | JsMode::LineCommentE280
+            | JsMode::BlockComment
+            | JsMode::BlockCommentStar => Slot::Refused("output inside a JavaScript comment"),
             JsMode::Lost => Slot::Refused(if attr {
                 "output in an event-handler attribute that uses character references (`&...;`); move the script to a `<script>` element"
             } else {
@@ -340,7 +458,7 @@ impl Ctx {
                 sub: match elem {
                     RawElem::Script => Sub::Js(Js::START),
                     RawElem::Style => Sub::Css(Css::Code),
-                    RawElem::Title | RawElem::Textarea => Sub::None,
+                    _ => Sub::None,
                 },
             },
             None => Self::Text,
@@ -348,10 +466,19 @@ impl Ctx {
     }
 
     /// Feeds literal bytes.
-    pub(crate) fn feed(&mut self, bytes: &[u8]) {
+    /// Feeds literal bytes, and returns the error they make, if any: a `:`
+    /// or a character reference after an output, before a URL's scheme is
+    /// closed. After an error the URL goes on as if in its query, so the
+    /// error is reported once.
+    pub(crate) fn feed(&mut self, bytes: &[u8]) -> Option<&'static str> {
+        let mut error = None;
         for &c in bytes {
             *self = self.step(c);
+            if let Some(e) = self.take_error() {
+                error = Some(e);
+            }
         }
+        error
     }
 
     /// The state after one byte.
@@ -455,7 +582,9 @@ impl Ctx {
             },
             Self::Bang { dashes } => match (dashes, c) {
                 (0, b'-') => Self::Bang { dashes: 1 },
-                (1, b'-') => Self::Comment { dashes: 0 },
+                (1, b'-') => Self::Comment {
+                    st: CommentSt::Start,
+                },
                 (_, b'>') => Self::Text,
                 _ => Self::Decl,
             },
@@ -466,13 +595,22 @@ impl Ctx {
                     Self::Decl
                 }
             }
-            Self::Comment { dashes } => match c {
-                b'-' => Self::Comment {
-                    dashes: dashes.saturating_add(1).min(2),
-                },
-                b'>' if dashes >= 2 => Self::Text,
-                _ => Self::Comment { dashes: 0 },
-            },
+            Self::Comment { st } => {
+                use CommentSt as S;
+                let st = match (st, c) {
+                    (S::Start | S::StartDash | S::End | S::EndBang, b'>') => return Self::Text,
+                    (S::Start, b'-') => S::StartDash,
+                    (S::StartDash | S::EndDash | S::End, b'-') => S::End,
+                    (S::Body | S::EndBang, b'-') => S::EndDash,
+                    (S::End, b'!') => S::EndBang,
+                    _ => S::Body,
+                };
+                Self::Comment { st }
+            }
+            Self::Raw {
+                elem: RawElem::Plaintext,
+                ..
+            } => self,
             Self::Raw { elem, matched, sub } => {
                 // The element ends at `</name` whatever the script or style
                 // inside it is doing: that is how the HTML parser reads it.
@@ -516,7 +654,7 @@ impl Ctx {
                 (AttrKind::Html, _) => {
                     Slot::Refused("output inside `srcdoc` is refused: it is parsed as HTML again")
                 }
-                (_, Sub::Url(url)) => Slot::Url(url),
+                (_, Sub::Url(url)) => Slot::Url(url.part),
                 (_, Sub::Js(js)) => Sub::js_slot(js, true),
                 (_, Sub::Css(css)) => Sub::css_slot(css, true),
                 (_, Sub::JsAmp(_) | Sub::CssAmp(_)) => {
@@ -546,6 +684,26 @@ impl Ctx {
             }
             Self::Decl => Slot::Refused("output inside a `<!...>` declaration"),
         }
+    }
+
+    fn take_error(&mut self) -> Option<&'static str> {
+        if let Self::Value {
+            sub: Sub::Url(url), ..
+        } = self
+        {
+            if url.broken {
+                *url = Url {
+                    part: UrlPart::Query,
+                    open: false,
+                    valued: false,
+                    broken: false,
+                };
+                return Some(
+                    "a URL scheme could be completed by an output here: a `:` or `&` follows an output before the URL's first `/`, `?`, or `#`; write the scheme in the template (`https://{{ host }}`), or start the output with `/`",
+                );
+            }
+        }
+        None
     }
 
     /// The state after a `{{ }}` wrote something at this place.
@@ -665,7 +823,11 @@ impl Ctx {
                 elem: RawElem::Style,
                 ..
             } => "a style element",
-            Self::Raw { .. } => "a title or textarea element",
+            Self::Raw {
+                elem: RawElem::Title | RawElem::Textarea,
+                ..
+            } => "a title or textarea element",
+            Self::Raw { .. } => "a raw-text element",
         }
     }
 }
@@ -676,7 +838,7 @@ mod tests {
 
     fn at(html: &str) -> Slot {
         let mut c = Ctx::Text;
-        c.feed(html.as_bytes());
+        let _ = c.feed(html.as_bytes());
         c.slot()
     }
 

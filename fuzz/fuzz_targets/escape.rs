@@ -11,7 +11,9 @@ struct Page {
 luminess::view!(Page as "page" { v: text });
 
 fuzz_target!(|data: &[u8]| {
-    let Ok(v) = std::str::from_utf8(data) else { return };
+    let Ok(v) = std::str::from_utf8(data) else {
+        return;
+    };
     let engine = Engine::<Page>::builder()
         .template("text", "<p>{{ page.v }}</p>")
         .template("dq", "<a title=\"{{ page.v }}\">")
@@ -54,8 +56,17 @@ fuzz_target!(|data: &[u8]| {
     assert!(!inner.contains([';', '}', '<', ':']) && !inner.contains("/*"));
     let cssq = r("cssq");
     let inner = &cssq["<style>a { b: '".len()..cssq.len() - "'; }</style>".len()];
-    assert!(inner.chars().all(|c| c.is_ascii_alphanumeric() || c == ' ' || c == char::from(92)));
+    assert!(
+        inner
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == ' ' || c == char::from(92))
+    );
     let q = r("query");
     let inner = &q[14..q.len() - 2];
-    assert!(inner.bytes().all(|c| c.is_ascii_alphanumeric() || b"-._~%".contains(&c)), "{inner}");
+    assert!(
+        inner
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || b"-._~%".contains(&c)),
+        "{inner}"
+    );
 });

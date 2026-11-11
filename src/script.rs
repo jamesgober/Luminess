@@ -30,6 +30,10 @@ pub(crate) enum JsMode {
     RegexClass,
     RegexClassEsc,
     LineComment,
+    /// In a line comment, after the first byte of U+2028 or U+2029.
+    LineCommentE2,
+    /// After its second byte.
+    LineCommentE280,
     BlockComment,
     BlockCommentStar,
     /// The tracker cannot follow the script any more.
@@ -50,6 +54,18 @@ pub(crate) struct Js {
     /// One brace counter per `${` of a template literal being read.
     tmpl: [u8; TMPL_CAP],
     tmpl_len: u8,
+    /// How much of `<!--` was just read in code: in a browser it starts a
+    /// line comment anywhere (ECMAScript Annex B).
+    lt: u8,
+    /// How much of `-->` was just read at the start of a line, where it
+    /// starts a line comment too.
+    dash: u8,
+    /// Only whitespace and comments since the last line break.
+    line: bool,
+    /// The last code byte was a lone `+` or `-`: a second one makes `++` or
+    /// `--`, after which `/` means what it meant before the first.
+    pm: u8,
+    pm_slash: Slash,
 }
 
 /// Keywords after which `/` starts a regular expression.
@@ -77,6 +93,11 @@ impl Js {
         word_len: 0,
         tmpl: [0; TMPL_CAP],
         tmpl_len: 0,
+        lt: 0,
+        dash: 0,
+        line: true,
+        pm: 0,
+        pm_slash: Slash::Regex,
     };
 
     pub(crate) const LOST: Self = Self {
@@ -87,7 +108,32 @@ impl Js {
     fn code(mut self, slash: Slash) -> Self {
         self.mode = JsMode::Code;
         self.slash = slash;
+        self.clear_word();
+        self.lt = 0;
+        self.dash = 0;
+        self.line = false;
+        self.clear_pm();
+        self
+    }
+
+    /// Clears the identifier, bytes too, so equal states compare equal.
+    fn clear_word(&mut self) {
+        self.word = [0; WORD_CAP];
         self.word_len = 0;
+    }
+
+    fn clear_pm(&mut self) {
+        self.pm = 0;
+        self.pm_slash = Slash::Regex;
+    }
+
+    /// Back in code after a line comment ends.
+    fn line_end(mut self) -> Self {
+        self.mode = JsMode::Code;
+        self.lt = 0;
+        self.dash = 0;
+        self.line = true;
+        self.clear_pm();
         self
     }
 
@@ -111,6 +157,8 @@ impl Js {
             JsMode::Str(q) => match c {
                 b'\\' => self.with(JsMode::StrEsc(q)),
                 c if c == q => self.code(Slash::Div),
+                // A string cannot hold a line break: the script is broken here.
+                b'\n' | b'\r' => Self::LOST,
                 _ => self,
             },
             JsMode::StrEsc(q) => self.with(JsMode::Str(q)),
@@ -147,24 +195,76 @@ impl Js {
             },
             JsMode::RegexClassEsc => self.with(JsMode::RegexClass),
             JsMode::LineComment => match c {
-                b'\n' | b'\r' => self.with(JsMode::Code),
+                b'\n' | b'\r' => self.line_end(),
+                0xE2 => self.with(JsMode::LineCommentE2),
                 _ => self,
+            },
+            JsMode::LineCommentE2 => match c {
+                0x80 => self.with(JsMode::LineCommentE280),
+                _ => self.with(JsMode::LineComment).step(c),
+            },
+            JsMode::LineCommentE280 => match c {
+                // U+2028 and U+2029 end a line too.
+                0xA8 | 0xA9 => self.line_end(),
+                _ => self.with(JsMode::LineComment).step(c),
             },
             JsMode::BlockComment => match c {
                 b'*' => self.with(JsMode::BlockCommentStar),
+                b'\n' | b'\r' => {
+                    let mut s = self;
+                    s.line = true;
+                    s
+                }
                 _ => self,
             },
             JsMode::BlockCommentStar => match c {
                 b'/' => self.with(JsMode::Code),
                 b'*' => self,
+                b'\n' | b'\r' => {
+                    let mut s = self.with(JsMode::BlockComment);
+                    s.line = true;
+                    s
+                }
                 _ => self.with(JsMode::BlockComment),
             },
             JsMode::Lost => self,
         }
     }
 
-    fn code_byte(mut self, c: u8) -> Self {
+    fn code_byte(self, c: u8) -> Self {
+        let (lt, dash, line) = (self.lt, self.dash, self.line);
+        // `<!--` anywhere, and `-->` at the start of a line, begin a line
+        // comment in a browser's script.
+        if (lt == 3 && c == b'-') || (dash == 2 && c == b'>') {
+            let mut s = self.with(JsMode::LineComment);
+            s.lt = 0;
+            s.dash = 0;
+            s.clear_pm();
+            return s;
+        }
+        let mut next = self.code_token(c);
+        next.lt = match (lt, c) {
+            (_, b'<') => 1,
+            (1, b'!') => 2,
+            (2, b'-') => 3,
+            _ => 0,
+        };
+        next.dash = match (dash, c) {
+            (0, b'-') if line => 1,
+            (1, b'-') => 2,
+            _ => 0,
+        };
+        next.line = match c {
+            b'\n' | b'\r' => true,
+            b' ' | b'\t' | b'\x0c' | b'/' => line,
+            _ => false,
+        };
+        next
+    }
+
+    fn code_token(mut self, c: u8) -> Self {
         if c.is_ascii_alphanumeric() || c == b'_' || c == b'$' || c >= 0x80 {
+            self.clear_pm();
             if usize::from(self.word_len) < WORD_CAP {
                 self.word[usize::from(self.word_len)] = c;
                 self.word_len += 1;
@@ -179,9 +279,26 @@ impl Js {
             }
             return self;
         }
-        self.word_len = 0;
+        self.clear_word();
         match c {
-            b' ' | b'\t' | b'\n' | b'\r' | b'\x0c' => self,
+            b' ' | b'\t' | b'\n' | b'\r' | b'\x0c' => {
+                self.clear_pm();
+                self
+            }
+            b'+' | b'-' => {
+                if self.pm == c {
+                    // `++` or `--`: postfix after a value, prefix after an
+                    // operator, so `/` keeps the meaning it had before.
+                    let slash = self.pm_slash;
+                    self.code(slash)
+                } else {
+                    let before = self.slash;
+                    let mut s = self.code(Slash::Regex);
+                    s.pm = c;
+                    s.pm_slash = before;
+                    s
+                }
+            }
             b'"' | b'\'' => self.with(JsMode::Str(c)),
             b'`' => self.with(JsMode::Tmpl),
             b'/' => self.with(JsMode::Slash),
@@ -227,20 +344,27 @@ impl Js {
         }
         let same_nesting = self.tmpl_len == other.tmpl_len
             && self.tmpl[..usize::from(self.tmpl_len)] == other.tmpl[..usize::from(other.tmpl_len)];
-        if self.mode == JsMode::Code && other.mode == JsMode::Code && same_nesting {
+        // Branches part way into `<!--`, `-->`, or `++` would read what
+        // follows differently.
+        let same_pending = self.lt == other.lt
+            && self.dash == other.dash
+            && self.pm == other.pm
+            && self.pm_slash == other.pm_slash;
+        if self.mode == JsMode::Code && other.mode == JsMode::Code && same_nesting && same_pending {
             let slash = if self.slash == other.slash {
                 self.slash
             } else {
                 Slash::Unknown
             };
-            return Some(
-                Self {
-                    word_len: 0,
-                    word: [0; WORD_CAP],
-                    ..self
-                }
-                .code(slash),
-            );
+            let mut j = self.code(slash);
+            // Treating `-->` as a comment start when either branch would is
+            // the safe side: output there is refused.
+            j.line = self.line || other.line;
+            j.lt = self.lt;
+            j.dash = self.dash;
+            j.pm = self.pm;
+            j.pm_slash = self.pm_slash;
+            return Some(j);
         }
         None
     }
@@ -253,9 +377,11 @@ impl Js {
             JsMode::Regex | JsMode::RegexEsc | JsMode::RegexClass | JsMode::RegexClassEsc => {
                 "a JavaScript regular expression"
             }
-            JsMode::LineComment | JsMode::BlockComment | JsMode::BlockCommentStar => {
-                "a JavaScript comment"
-            }
+            JsMode::LineComment
+            | JsMode::LineCommentE2
+            | JsMode::LineCommentE280
+            | JsMode::BlockComment
+            | JsMode::BlockCommentStar => "a JavaScript comment",
             JsMode::Slash => "JavaScript code after `/`",
             JsMode::Lost => "JavaScript the compiler cannot follow",
         }

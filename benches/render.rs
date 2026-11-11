@@ -147,6 +147,9 @@ fn main() {
         out.clear();
         let _ = black_box(engine.render("page", black_box(&p), &mut out));
     });
+    time("render typical page into a new String", 20_000, || {
+        let _ = black_box(engine.render_to_string("page", black_box(&p)));
+    });
     let templates = engine.templates();
     time("render typical page (Templates snapshot)", 20_000, || {
         out.clear();

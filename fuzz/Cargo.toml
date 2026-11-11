@@ -13,6 +13,11 @@ libfuzzer-sys = "0.4"
 [dependencies.luminess]
 path = ".."
 
+# The release `same_output` compares against, byte for byte.
+[dependencies.luminess_base]
+package = "luminess"
+version = "=0.9.2"
+
 # Keeps this crate out of any parent workspace.
 [workspace]
 members = ["."]
@@ -26,5 +31,11 @@ doc = false
 [[bin]]
 name = "escape"
 path = "fuzz_targets/escape.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "same_output"
+path = "fuzz_targets/same_output.rs"
 test = false
 doc = false
