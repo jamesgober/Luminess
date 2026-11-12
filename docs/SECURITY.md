@@ -59,7 +59,8 @@ comment, a `<!...>` declaration, `srcdoc`, an SVG animation value (`values`,
 `to`, `from`, `by` on `animate`, `set`, `animateMotion`, `animateTransform`,
 which can set an `href`), right after `<` in a raw-text element other than a
 script, a script the HTML parser reads as double-escaped (after `<!--` and
-`<script`), right after another output in CSS, a JavaScript comment or regular
+`<script`), right after another output in CSS, after branches of a script
+that disagree on being part way into `<!--`, `-->`, or `<script`, a JavaScript comment or regular
 expression, right after `/` or a backslash in JavaScript or CSS, right after
 `$` in a template literal, and in a CSS comment. A literal `:` or `&` after an
 output, before a URL's first `/`, `?`, or `#`, is refused too: the output

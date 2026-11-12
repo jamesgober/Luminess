@@ -62,7 +62,8 @@ markup (now escaped).
   output right after `<` in a raw-text element other than a script, and
   output in a script the HTML parser reads as double-escaped (after `<!--`
   and `<script`). Such a script's `</script>` no longer ends the tracker's
-  view of it, as it does not end the element.
+  view of it, as it does not end the element. Branches in a script must
+  also agree on whether they end part way into `<!--`, `-->`, or `<script`.
 - In CSS, a literal `*` right after an output, and two outputs side by
   side, are compile errors: a value could open a comment with them.
 - The `web-net` feature uses web-net 0.10. `web::ErrorView` has `base`, the
