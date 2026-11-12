@@ -275,7 +275,8 @@ pub(crate) enum Ctx {
 pub(crate) struct ScriptData {
     /// 0: plain, 1: escaped, 2: double escaped.
     state: u8,
-    /// The last bytes read, lowercase, newest last.
+    /// The last bytes read that may still complete a pattern, lowercase,
+    /// newest last, zeros before them.
     recent: [u8; 8],
 }
 
@@ -303,6 +304,11 @@ impl ScriptData {
         };
         self.recent.rotate_left(1);
         self.recent[7] = c;
+        // Keep only what may still complete a pattern, so that two states
+        // that read what follows the same way are equal: a loop body then
+        // ends where it started, and is compiled once.
+        let k = self.pending().len();
+        self.recent[..8 - k].fill(0);
         self
     }
 

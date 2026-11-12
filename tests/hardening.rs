@@ -513,3 +513,23 @@ var a = {{ p.v }};
     );
     assert!(out.contains("var a = \"alert(document.domain)\";"), "{out}");
 }
+
+#[test]
+fn nested_loops_in_a_script_compile_once() {
+    // A loop body in a script must end in the state it started in, as far
+    // as what follows is concerned, or each nesting level would compile its
+    // body twice: 2^20 times here.
+    let mut tpl = String::from("<script>var a = 1;");
+    for _ in 0..20 {
+        tpl.push_str("{% for i in p.v %}a = 1;");
+    }
+    for _ in 0..20 {
+        tpl.push_str("b = 2;{% endfor %}");
+    }
+    tpl.push_str("</script>");
+    let t = Instant::now();
+    let e = refused(&tpl);
+    assert!(e.contains("needs a list"), "{e}");
+    assert!(!e.contains("too large"), "{e}");
+    assert!(t.elapsed() < Duration::from_millis(500), "{:?}", t.elapsed());
+}
