@@ -39,10 +39,10 @@ fn newly_refused(e: &str) -> bool {
     NEW_REFUSALS.iter().any(|m| e.contains(m))
 }
 
-/// Templates this tree renders differently from the base on purpose: an
-/// `html` value reached through `default` on text is escaped now, and a
-/// script the HTML parser double-escapes is followed past its inner
-/// `</script>`.
+/// Templates this tree renders or compiles differently from the base on
+/// purpose: an `html` value reached through `default` on text is escaped
+/// now, and a script the HTML parser double-escapes is followed past its
+/// inner `</script>` (so the template may now end inside it).
 fn renders_differently_on_purpose(src: &str) -> bool {
     let lower = src.to_ascii_lowercase();
     lower.contains("default") || (lower.contains("<!--") && lower.matches("<script").count() > 1)
@@ -248,13 +248,16 @@ fuzz_target!(|data: &[u8]| {
         }
         (Err(now), Err(base)) => {
             let now = now.to_string();
-            if !newly_refused(&now) {
+            if !newly_refused(&now) && !renders_differently_on_purpose(src) {
                 assert_eq!(now, base.to_string());
             }
         }
         (Err(now), Ok(_)) => {
             let now = now.to_string();
-            assert!(newly_refused(&now), "{now}");
+            assert!(
+                newly_refused(&now) || renders_differently_on_purpose(src),
+                "{now}"
+            );
         }
         (Ok(_), Err(base)) => panic!("compiles now, not in the base: {base}"),
     }
