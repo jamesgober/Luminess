@@ -968,6 +968,16 @@ impl Ctx {
                 elem: RawElem::Script,
                 script,
                 ..
+            } if script.state == 1 => "a script after `<!--` (escaped)",
+            Self::Raw {
+                elem: RawElem::Script,
+                script,
+                ..
+            } if script.state == 2 => "a script after `<!--` and `<script` (double-escaped)",
+            Self::Raw {
+                elem: RawElem::Script,
+                script,
+                ..
             } if !script.pending().is_empty() => {
                 "a script part way into `<!--`, `-->`, or `<script`"
             }

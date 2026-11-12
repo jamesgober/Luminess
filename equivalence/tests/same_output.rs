@@ -158,6 +158,7 @@ const NEW_REFUSALS: &[&str] = &[
     "right after `<` in a raw-text element",
     "double-escaped",
     "part way into `<!--`",
+    "a script after `<!--`",
 ];
 
 fn newly_refused(e: &str) -> bool {

@@ -502,6 +502,8 @@ fn double_escaped_script_content_is_followed() {
     );
     let e = refused("<script>{% if p.w %}<!{% endif %}--<script> {{ p.v }}</script>");
     assert!(e.contains("part way into `<!--`"), "{e}");
+    let e = refused("<script>{% if p.w %}<!--{% endif %}x = {{ p.v }};</script>");
+    assert!(e.contains("a script after `<!--` (escaped)"), "{e}");
     // `-->` leaves the escaped states; output after it is followed again.
     let out = ok(
         "<script>
