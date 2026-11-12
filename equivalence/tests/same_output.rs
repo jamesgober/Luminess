@@ -157,6 +157,7 @@ const NEW_REFUSALS: &[&str] = &[
     "SVG animation value",
     "right after `<` in a raw-text element",
     "double-escaped",
+    "part way into `<!--`",
 ];
 
 fn newly_refused(e: &str) -> bool {

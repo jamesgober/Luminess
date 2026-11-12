@@ -500,7 +500,8 @@ fn double_escaped_script_content_is_followed() {
         ),
         "<script>if (a<b) go()x(\"1\")</script>"
     );
-    let _ = refused("<script>{% if p.w %}<!{% endif %}--<script> {{ p.v }}</script>");
+    let e = refused("<script>{% if p.w %}<!{% endif %}--<script> {{ p.v }}</script>");
+    assert!(e.contains("part way into `<!--`"), "{e}");
     // `-->` leaves the escaped states; output after it is followed again.
     let out = ok(
         "<script>
@@ -531,5 +532,9 @@ fn nested_loops_in_a_script_compile_once() {
     let e = refused(&tpl);
     assert!(e.contains("needs a list"), "{e}");
     assert!(!e.contains("too large"), "{e}");
-    assert!(t.elapsed() < Duration::from_millis(500), "{:?}", t.elapsed());
+    assert!(
+        t.elapsed() < Duration::from_millis(500),
+        "{:?}",
+        t.elapsed()
+    );
 }

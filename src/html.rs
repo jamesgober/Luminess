@@ -964,6 +964,13 @@ impl Ctx {
     /// A short description for error messages.
     pub(crate) fn describe(&self) -> &'static str {
         match self {
+            Self::Raw {
+                elem: RawElem::Script,
+                script,
+                ..
+            } if !script.pending().is_empty() => {
+                "a script part way into `<!--`, `-->`, or `<script`"
+            }
             Self::Text => "HTML text",
             Self::Lt | Self::TagName { .. } | Self::EndTag => "a tag name",
             Self::Tag { .. } | Self::AttrName { .. } | Self::AfterAttrName { .. } => "a tag",
