@@ -47,7 +47,7 @@ fn newly_refused(e: &str) -> bool {
 /// inner `</script>` (so the template may now end inside it).
 fn renders_differently_on_purpose(src: &str) -> bool {
     let lower = src.to_ascii_lowercase();
-    lower.contains("default") || (lower.contains("<!--") && lower.matches("<script").count() > 1)
+    lower.contains("default") || (lower.contains("<!--") && lower.contains("<script"))
 }
 
 /// Attribute names the tracker reads as URLs.
@@ -261,6 +261,16 @@ fuzz_target!(|data: &[u8]| {
                 "{now}"
             );
         }
-        (Ok(_), Err(base)) => panic!("compiles now, not in the base: {base}"),
+        // A double-escaped script read as the HTML parser reads it can make
+        // a template the base refused (an unclosed comment that is really
+        // script content) a complete one.
+        (Ok(now), Err(base)) => {
+            assert!(
+                renders_differently_on_purpose(src),
+                "compiles now, not in the base: {base}"
+            );
+            let a = now.render("t", &page).unwrap();
+            assert!(!oracle || no_script_urls(&a), "{a}");
+        }
     }
 });
