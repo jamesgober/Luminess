@@ -1,8 +1,7 @@
 # Luminess template syntax
 
-Status: frozen as of 0.9.0 (agreed 2026-11-08). Changes James asks for after
-his review are made in a 0.x release with a migration note in CHANGELOG.md;
-after 1.0, only additions.
+Status: frozen as of 0.9.0 (2026-11-08). Any change before 1.0 ships in a 0.x
+release with a migration note in CHANGELOG.md; after 1.0, only additions.
 
 The syntax follows Jinja and Twig, so anyone who has written a Jinja, Twig,
 Liquid, or Django template can read a Luminess template on sight. Where
