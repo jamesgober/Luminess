@@ -1,6 +1,6 @@
 //! Runs a compiled template against a view, writing into the caller's buffer.
 
-use std::{borrow::Cow, fmt::Write as _, rc::Rc, sync::Arc};
+use std::{borrow::Cow, fmt::Write as _, sync::Arc};
 
 use crate::{
     compile::{CExpr, CNode, Esc, Filt, LoopAttr, Program, Step},
@@ -100,28 +100,24 @@ struct Slot<'a> {
     value: Value<'a>,
     index: usize,
     len: usize,
-    /// A `set` value that is text a filter built, kept in `Run::texts` at
-    /// this slot's index.
-    text: bool,
+    /// A `set` value that is text a filter built: its index in `Run::texts`.
+    text: Option<usize>,
 }
 
 /// Call arguments up to this many are evaluated without allocating.
 const ARGS_INLINE: usize = 4;
 
-/// A value during evaluation: a view's value, text a filter produced, or
-/// text a `set` keeps (shared, so reading it copies nothing).
+/// A value during evaluation: a view's value, or text a filter produced.
 enum Val<'a> {
     V(Value<'a>),
     Owned(String),
-    Shared(Rc<str>),
 }
 
 struct Run<'a, 'o> {
     root: &'a dyn View,
     filters: &'a [Arc<dyn FilterFn>],
     slots: Vec<Slot<'a>>,
-    /// Text kept by `set`, by slot; grown when a `set` first needs it.
-    texts: Vec<Option<Rc<str>>>,
+    texts: Vec<String>,
     out: &'o mut Vec<u8>,
     scratch: String,
     fallbacks: u32,
@@ -150,7 +146,7 @@ pub(crate) fn run(
                 value: Value::Absent,
                 index: 0,
                 len: 0,
-                text: false,
+                text: None,
             };
             program.slots
         ],
@@ -180,7 +176,6 @@ fn as_value<'v>(v: &'v Val<'_>) -> Value<'v> {
     match v {
         Val::V(v) => *v,
         Val::Owned(s) => Value::Text(s),
-        Val::Shared(s) => Value::Text(s),
     }
 }
 
@@ -278,7 +273,6 @@ fn truthy(v: &Val<'_>) -> bool {
             Value::List(l) => !l.is_empty(),
         },
         Val::Owned(s) => !s.is_empty(),
-        Val::Shared(s) => !s.is_empty(),
     }
 }
 
@@ -356,7 +350,7 @@ impl<'a> Run<'a, '_> {
                                 value: l.get(i),
                                 index: i,
                                 len,
-                                text: false,
+                                text: None,
                             };
                             self.nodes(body);
                         }
@@ -365,41 +359,35 @@ impl<'a> Run<'a, '_> {
                 CNode::Bind { slot, value, body } => {
                     let v = match self.eval(value) {
                         Val::V(v) => v,
-                        Val::Owned(_) | Val::Shared(_) => Value::Absent,
+                        Val::Owned(_) => Value::Absent,
                     };
                     self.slots[usize::from(*slot)] = Slot {
                         value: v,
                         index: 0,
                         len: 1,
-                        text: false,
+                        text: None,
                     };
                     self.nodes(body);
                 }
                 CNode::Set { slot, value } => {
-                    let i = usize::from(*slot);
-                    let text = match self.eval(value) {
-                        Val::V(v) => {
-                            self.slots[i] = Slot {
-                                value: v,
+                    let slot_value = match self.eval(value) {
+                        Val::V(v) => Slot {
+                            value: v,
+                            index: 0,
+                            len: 1,
+                            text: None,
+                        },
+                        Val::Owned(s) => {
+                            self.texts.push(s);
+                            Slot {
+                                value: Value::Absent,
                                 index: 0,
                                 len: 1,
-                                text: false,
-                            };
-                            continue;
+                                text: Some(self.texts.len() - 1),
+                            }
                         }
-                        Val::Owned(s) => Rc::from(s),
-                        Val::Shared(s) => s,
                     };
-                    if self.texts.len() <= i {
-                        self.texts.resize(i + 1, None);
-                    }
-                    self.texts[i] = Some(text);
-                    self.slots[i] = Slot {
-                        value: Value::Absent,
-                        index: 0,
-                        len: 1,
-                        text: true,
-                    };
+                    self.slots[usize::from(*slot)] = slot_value;
                 }
                 CNode::Try(body, fallback) => {
                     let mark = self.out.len();
@@ -455,12 +443,9 @@ impl<'a> Run<'a, '_> {
             }
             CExpr::Slot(s, steps) => {
                 let sl = self.slots[usize::from(*s)];
-                let base = if sl.text {
-                    self.texts[usize::from(*s)]
-                        .as_ref()
-                        .map_or(Val::V(Value::Absent), |t| Val::Shared(Rc::clone(t)))
-                } else {
-                    Val::V(sl.value)
+                let base = match sl.text {
+                    Some(i) => Val::Owned(self.texts[i].clone()),
+                    None => Val::V(sl.value),
                 };
                 if steps.is_empty() {
                     base
@@ -515,7 +500,6 @@ impl<'a> Run<'a, '_> {
                     Val::V(Value::Absent) => true,
                     Val::V(Value::Text(s) | Value::Html(s)) => s.is_empty(),
                     Val::Owned(s) => s.is_empty(),
-                    Val::Shared(s) => s.is_empty(),
                     Val::V(_) => false,
                 };
                 if empty { self.eval(b) } else { v }
@@ -623,7 +607,7 @@ impl<'a> Run<'a, '_> {
             CExpr::Root(steps) => (Value::View(self.root), steps),
             CExpr::Slot(s, steps) => {
                 let sl = &self.slots[usize::from(*s)];
-                if sl.text {
+                if sl.text.is_some() {
                     return None;
                 }
                 (sl.value, steps)
@@ -696,10 +680,6 @@ impl<'a> Run<'a, '_> {
                 Answer::Value(v) => detach(v),
                 Answer::Text(t) => Val::Owned(t),
             },
-            Val::Shared(s) => match f.apply(Value::Text(s), values) {
-                Answer::Value(v) => detach(v),
-                Answer::Text(t) => Val::Owned(t),
-            },
         })
     }
 
@@ -715,7 +695,6 @@ impl<'a> Run<'a, '_> {
                 Value::Absent | Value::View(_) | Value::List(_) => Cow::Borrowed(""),
             },
             Val::Owned(s) => Cow::Borrowed(s),
-            Val::Shared(s) => Cow::Borrowed(s),
         }
     }
 
@@ -879,7 +858,6 @@ impl<'a> Run<'a, '_> {
                 }
             },
             Val::Owned(s) => self.text_out(&s, esc),
-            Val::Shared(s) => self.text_out(&s, esc),
         }
     }
 

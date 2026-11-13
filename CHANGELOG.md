@@ -72,9 +72,8 @@ markup (now escaped).
   `{{ error.base }}/static/site.css`.
 - With the `web-net` feature, a render stops at web-net's output budget
   instead of building the whole page first.
-- Text comparisons in conditions and reads of `set` text copy nothing, and
-  calls with up to four arguments allocate nothing: about 45 ns less per
-  comparison and 30 ns less per `set` read.
+- Text comparisons in conditions copy nothing, and calls with up to four
+  arguments allocate nothing: about 45 ns less per comparison.
 
 ### Removed
 

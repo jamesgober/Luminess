@@ -95,4 +95,5 @@ The rebuild. Nothing of 0.1's API remains.
 - [ ] 24-hour fuzz runs of `compile` and `escape` with no findings.
 - [ ] A benchmark run on a quiet machine, and the numbers in the README and `docs/PERFORMANCE.md` updated.
 - [ ] One real theme (a site's layouts, partials, and blocks) built on it, and any rough edges it finds fixed.
+- [ ] A `set` that holds built text shares it instead of copying it on every read and every loop pass, without slowing pages that use no `set` (a first try measured several percent slower on such pages, so 0.10 keeps copying).
 - [ ] James reviews the 0.10 names (`Engine`, `Template`, `HasSchema`, `Answer`, `BlockError`, `render`/`render_into`, `replace`, `from_dir`/`reload_dir`); docs/API.md ends with why each was chosen.
