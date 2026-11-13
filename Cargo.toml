@@ -55,7 +55,7 @@ web-net = ["dep:web-net"]
 # None by default. The optional `web-net` feature adds the web framework
 # Luminess plugs into; the default build depends on nothing.
 # web-net 0.10, whose error pages carry the site's base path.
-web-net = { version = "0.10", optional = true, default-features = false }
+web-net = { version = "0.10.1", optional = true, default-features = false }
 
 
 # DEV DEPENDENCIES
