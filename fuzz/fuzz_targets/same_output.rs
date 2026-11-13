@@ -1,11 +1,8 @@
 //! Any bytes as a template: this tree and the base release (see Cargo.toml)
-//! agree on whether it compiles, and render it byte for byte the same.
-//!
-//! Except where 0.9.3 reads a template the way a browser does and 0.9.2 did
-//! not (URL attributes; scripts across line breaks and HTML-like comments):
-//! there the two may differ, but output that both compile must agree outside
-//! URL attribute values. Whatever this tree renders never has a
-//! `javascript:` URL in an `href`.
+//! agree on whether it compiles, and render it byte for byte the same. The
+//! one exception: a template this tree refuses with one of the refusals it
+//! adds over the base (`NEW_REFUSALS`). Whatever this tree renders never has
+//! a `javascript:` URL in a URL attribute.
 
 #![no_main]
 
@@ -29,29 +26,28 @@ luminess::view!(Page as "page" { title: text, body: html, count: int, on: bool, 
 luminess_base::view!(Item as "item" { name: text, tags: list(text) });
 luminess_base::view!(Page as "page" { title: text, body: html, count: int, on: bool, items: list(object(Item)) });
 
-/// Text the JavaScript tracker now reads as a browser does: line breaks,
-/// HTML-like comments, `++` and `--`.
-fn breaks(src: &str) -> bool {
-    src.contains('\n')
-        || src.contains('\r')
-        || src.contains("<!")
-        || src.contains("--")
-        || src.contains("++")
-        || src.contains('\u{2028}')
-        || src.contains('\u{2029}')
+/// Compile errors this tree adds over the base release.
+const NEW_REFUSALS: &[&str] = &[
+    "two CSS values side by side",
+    "could open a comment with the value",
+    "SVG animation value",
+    "right after `<` in a raw-text element",
+    "double-escaped",
+    "part way into `<!--`",
+    "a script after `<!--`",
+];
+
+fn newly_refused(e: &str) -> bool {
+    NEW_REFUSALS.iter().any(|m| e.contains(m))
 }
 
-/// Places where 0.9.3 reads a template as a browser does and 0.9.2 did not,
-/// apart from URL attribute values: outputs may differ.
-fn tracker_changed(src: &str) -> bool {
+/// Templates this tree renders or compiles differently from the base on
+/// purpose: an `html` value reached through `default` on text is escaped
+/// now, and a script the HTML parser double-escapes is followed past its
+/// inner `</script>` (so the template may now end inside it).
+fn renders_differently_on_purpose(src: &str) -> bool {
     let lower = src.to_ascii_lowercase();
-    (lower.contains("script") && breaks(src))
-        || lower.contains("<!")
-        || ["xmp", "iframe", "noembed", "noframes", "noscript", "plaintext"]
-            .iter()
-            .any(|e| lower.contains(e))
-        // Long chains, now refused instead of exhausting the stack.
-        || src.matches("or").count() + src.matches("and").count() + src.matches('|').count() > 60
+    lower.contains("default") || (lower.contains("<!--") && lower.contains("<script"))
 }
 
 /// Attribute names the tracker reads as URLs.
@@ -81,35 +77,6 @@ fn url_name(n: &str) -> bool {
             | "lowsrc"
             | "dynsrc"
     ) || (!n.starts_with("on") && (n.contains("url") || n.contains("uri")))
-}
-
-/// Compile results may differ.
-fn changed_on_purpose(src: &str) -> bool {
-    let lower = src.to_ascii_lowercase();
-    [
-        "href",
-        "src",
-        "action",
-        "cite",
-        "poster",
-        "background",
-        "longdesc",
-        "usemap",
-        "data",
-        "manifest",
-        "codebase",
-        "icon",
-        "profile",
-        "ping",
-        "archive",
-        "classid",
-        "url",
-        "uri",
-    ]
-    .iter()
-    .any(|n| lower.contains(n))
-        || tracker_changed(src)
-        || breaks(src)
 }
 
 /// The values of URL attributes in `s`, as (start, end) byte ranges: a
@@ -228,17 +195,6 @@ fn url_values(s: &str) -> Vec<(usize, usize)> {
     out
 }
 
-fn without_urls(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut at = 0;
-    for (start, end) in url_values(s) {
-        out.push_str(&s[at..start]);
-        at = end;
-    }
-    out.push_str(&s[at..]);
-    out
-}
-
 /// No URL attribute holds a `javascript:` URL, as a browser reads it.
 fn no_script_urls(s: &str) -> bool {
     url_values(s).into_iter().all(|(start, end)| {
@@ -274,56 +230,47 @@ fuzz_target!(|data: &[u8]| {
     let now = luminess::Engine::<Page>::builder()
         .template("t", src)
         .template("part", "<b>{{ page.title }}</b>")
-        .compile();
+        .build();
     let base = luminess_base::Engine::<Page>::builder()
         .template("t", src)
         .template("part", "<b>{{ page.title }}</b>")
         .compile();
-    let changed = changed_on_purpose(src);
     // The oracle holds for values; a literal `javascript:` (or one spelled
     // with a character reference) is the template's own.
     let lower = src.to_ascii_lowercase();
     let oracle = !lower.contains('j') && !lower.contains('&');
     match (now, base) {
         (Ok(now), Ok(base)) => {
-            let a = now.render_to_string("t", &page).unwrap();
+            let a = now.render("t", &page).unwrap();
             let b = base.render_to_string("t", &page).unwrap();
             assert!(!oracle || no_script_urls(&a), "{a}");
-            if tracker_changed(src) {
-                // Read differently around a comment, script, or raw-text
-                // element: only the URL oracle applies.
-            } else if changed {
-                assert_eq!(without_urls(&a), without_urls(&b));
-            } else {
+            if !renders_differently_on_purpose(src) {
                 assert_eq!(a, b);
             }
         }
         (Err(now), Err(base)) => {
-            let (now, base) = (now.to_string(), base.to_string());
-            // Chain links count toward the expression depth now, so a depth
-            // error may be found at another place.
-            let depth = |e: &str| e.contains("nested too deeply") || e.contains("too long");
-            // Branches that end in the same JavaScript place join now; 0.9.2
-            // refused some of them (and reported what followed differently).
-            let js_join = |e: &str| {
-                e.contains("end in different places: a JavaScript")
-                    || e.contains("starts in a JavaScript")
-            };
-            // A chain now too long can stop the parse before another error.
-            if !changed && !depth(&now) && !js_join(&base) {
-                assert_eq!(now, base);
+            let now = now.to_string();
+            if !newly_refused(&now) && !renders_differently_on_purpose(src) {
+                assert_eq!(now, base.to_string());
             }
         }
-        // Branches that end in the same JavaScript string join now.
-        (Ok(now), Err(base)) if changed || base.to_string().contains("different places") => {
-            let a = now.render_to_string("t", &page).unwrap();
+        (Err(now), Ok(_)) => {
+            let now = now.to_string();
+            assert!(
+                newly_refused(&now) || renders_differently_on_purpose(src),
+                "{now}"
+            );
+        }
+        // A double-escaped script read as the HTML parser reads it can make
+        // a template the base refused (an unclosed comment that is really
+        // script content) a complete one.
+        (Ok(now), Err(base)) => {
+            assert!(
+                renders_differently_on_purpose(src),
+                "compiles now, not in the base: {base}"
+            );
+            let a = now.render("t", &page).unwrap();
             assert!(!oracle || no_script_urls(&a), "{a}");
         }
-        (Err(_), Ok(_)) if changed => {}
-        (now, base) => panic!(
-            "compile results differ: now ok={} base ok={}",
-            now.is_ok(),
-            base.is_ok()
-        ),
     }
 });

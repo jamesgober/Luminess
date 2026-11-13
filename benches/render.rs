@@ -139,21 +139,16 @@ fn main() {
     let p = page();
     let mut out = Vec::with_capacity(16 * 1024);
     out.clear();
-    let _ = engine.render("page", &p, &mut out).expect("renders");
+    let _ = engine.render_into("page", &p, &mut out).expect("renders");
     let bytes = out.len();
     println!("typical page: {bytes} bytes of output");
 
     time("render typical page (Engine)", 20_000, || {
         out.clear();
-        let _ = black_box(engine.render("page", black_box(&p), &mut out));
+        let _ = black_box(engine.render_into("page", black_box(&p), &mut out));
     });
     time("render typical page into a new String", 20_000, || {
-        let _ = black_box(engine.render_to_string("page", black_box(&p)));
-    });
-    let templates = engine.templates();
-    time("render typical page (Templates snapshot)", 20_000, || {
-        out.clear();
-        let _ = black_box(templates.render("page", black_box(&p), &mut out));
+        let _ = black_box(engine.render("page", black_box(&p)));
     });
 
     let small = Engine::<Page>::builder()
@@ -162,8 +157,28 @@ fn main() {
         .expect("compiles");
     time("render one value", 1_000_000, || {
         out.clear();
-        let _ = black_box(small.render("t", black_box(&p), &mut out));
+        let _ = black_box(small.render_into("t", black_box(&p), &mut out));
     });
+
+    // Per related post: one text comparison, or one read of a `set` value.
+    let loops = Engine::<Page>::builder()
+        .template("plain", "{% for r in page.related %}<li>{{ r.title }}</li>{% endfor %}")
+        .template(
+            "compare",
+            "{% for r in page.related %}{% if r.date == \"2026-01-01\" %}<li>{{ r.title }}</li>{% endif %}{% endfor %}",
+        )
+        .template(
+            "set",
+            "{% set u = page.title | upper %}{% for r in page.related %}<li>{{ u }}</li>{% endfor %}",
+        )
+        .build()
+        .expect("compiles");
+    for name in ["plain", "compare", "set"] {
+        time(&format!("loop over related posts: {name}"), 200_000, || {
+            out.clear();
+            let _ = black_box(loops.render_into(name, black_box(&p), &mut out));
+        });
+    }
 
     let text = "A short excerpt of the post that runs for a sentence or two, with an apostrophe's worth of escaping. ".repeat(40);
     let mut esc = Vec::with_capacity(8192);
@@ -204,7 +219,7 @@ fn main() {
                     let mut out = Vec::with_capacity(256);
                     for _ in 0..iters {
                         out.clear();
-                        let _ = black_box(small.render("t", black_box(p), &mut out));
+                        let _ = black_box(small.render_into("t", black_box(p), &mut out));
                     }
                 });
             }

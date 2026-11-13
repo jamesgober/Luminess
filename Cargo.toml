@@ -3,7 +3,7 @@
 # =============================================================================
 [package]
 name    = "luminess"
-version = "0.9.3"
+version = "0.10.0"
 
 # Minimum Supported Rust Version (MSRV)
 rust-version = "1.85"
@@ -54,9 +54,8 @@ web-net = ["dep:web-net"]
 [dependencies]
 # None by default. The optional `web-net` feature adds the web framework
 # Luminess plugs into; the default build depends on nothing.
-# Any web-net from 0.8 to 0.9: the Render trait is the same in both. CI tests
-# the oldest and the newest.
-web-net = { version = ">=0.8, <0.10", optional = true, default-features = false }
+# web-net 0.10, whose error pages carry the site's base path.
+web-net = { version = "0.10.1", optional = true, default-features = false }
 
 
 # DEV DEPENDENCIES

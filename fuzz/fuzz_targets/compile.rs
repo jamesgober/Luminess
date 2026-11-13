@@ -34,7 +34,7 @@ fuzz_target!(|data: &[u8]| {
             "base",
             "<b>{% block a %}x{% endblock %}{% block b %}{% endblock %}</b>",
         )
-        .compile();
+        .build();
     if let Ok(t) = built {
         let page = Page {
             title: "<x> & \"y\"".into(),
@@ -53,7 +53,7 @@ fuzz_target!(|data: &[u8]| {
             ],
         };
         let mut out = Vec::new();
-        let _ = t.render("t", &page, &mut out);
+        let _ = t.render_into("t", &page, &mut out);
         assert!(std::str::from_utf8(&out).is_ok());
     }
 });

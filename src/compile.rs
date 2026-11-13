@@ -29,8 +29,12 @@ pub(crate) const MAX_LITERAL_BYTES: usize = 16 << 20;
 /// How an output is escaped.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Esc {
-    /// HTML text: text escaped, trusted markup as is.
+    /// HTML text, for a value the compiler typed text: everything escaped,
+    /// even a `Value::Html` a view or filter answers where it declared text.
     Text,
+    /// HTML text, for a value the compiler typed html: trusted markup as is,
+    /// text escaped.
+    Html,
     /// A quoted attribute value or RCDATA: everything escaped.
     Attr,
     /// The start of a URL attribute: scheme checked, then normalized.
@@ -237,7 +241,7 @@ impl Ty {
             Kind::Float => Self::Float,
             Kind::Text => Self::Text,
             Kind::Html => Self::Html,
-            Kind::Object(s) => Self::Object(s.get()),
+            Kind::Object(s) => Self::Object(s.clone()),
             Kind::List(k) => Self::List((**k).clone()),
         }
     }
@@ -1027,6 +1031,12 @@ impl<'s> Compiler<'s> {
             Slot::Js { string, attr } => Esc::Js { string, attr },
             Slot::Css { string, attr } => Esc::Css { string, attr },
         };
+        // Markup passes only where the schema declared it.
+        let esc = if esc == Esc::Text && matches!(ty, Ty::Html) {
+            Esc::Html
+        } else {
+            esc
+        };
         match ty {
             Ty::Object(s) if s.renders() => {
                 if raw {
@@ -1070,7 +1080,7 @@ impl<'s> Compiler<'s> {
             _ => {}
         }
         if raw {
-            if esc != Esc::Text {
+            if !matches!(esc, Esc::Text | Esc::Html) {
                 self.error(
                     t,
                     e.at,
@@ -1392,10 +1402,10 @@ impl<'s> Compiler<'s> {
         let name = seg.name.as_str();
         match &seg.args {
             None => {
-                if let Some((id, kind)) = s.field(name) {
+                if let Some((id, kind)) = s.field_id(name) {
                     return Some((Step::Field(id), Ty::of(kind)));
                 }
-                if s.method(name).is_some() {
+                if s.method_id(name).is_some() {
                     self.error(
                         t,
                         seg.at,
@@ -1412,8 +1422,8 @@ impl<'s> Compiler<'s> {
                 None
             }
             Some(args) => {
-                let Some((id, params, ret)) = s.method(name) else {
-                    if s.field(name).is_some() {
+                let Some((id, params, ret)) = s.method_id(name) else {
+                    if s.field_id(name).is_some() {
                         self.error(
                             t,
                             seg.at,

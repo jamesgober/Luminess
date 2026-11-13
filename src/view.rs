@@ -3,50 +3,44 @@
 //! A [`Schema`] names the fields a view answers and the [`Kind`] of each. Templates
 //! compile against it, so `{{ page.titel }}` is an error at startup rather than an
 //! empty string in production. At render time the engine asks the [`View`] for
-//! each field by its [`FieldId`], the position the field has in the schema.
+//! each field by its index, the position the field has in the schema.
 
-use std::{fmt, sync::Arc};
+use std::{
+    fmt,
+    sync::{Arc, OnceLock},
+};
 
-use crate::output::{Failed, Output};
+use crate::output::{BlockError, Output};
 
-/// The position of a field in its [`Schema`]: the first field declared is `0`.
-///
-/// The compiler resolves every field name in a template to its id once, so a
-/// render never compares names.
+/// The position of a field in its schema, as the compiler stores it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct FieldId(u16);
+pub(crate) struct FieldId(u16);
 
 impl FieldId {
-    /// The id of the field declared at `index`.
-    #[must_use]
-    pub const fn new(index: u16) -> Self {
-        Self(index)
-    }
-
-    /// The position of the field in its schema.
-    #[must_use]
-    pub const fn index(self) -> usize {
+    pub(crate) const fn index(self) -> usize {
         self.0 as usize
     }
 }
 
 /// A value a template can read: implemented by the application's content types.
 ///
-/// `field` is called with the ids of the fields the schema declared. An id the
-/// view does not know answers [`Value::Absent`].
+/// `field` is called with the index of a field the schema declared: its
+/// position, counting from 0 in the order the fields were declared. An index
+/// the view does not know answers [`Value::Absent`]. The compiler resolved
+/// every name to its index at startup, so a render never compares names.
 ///
 /// A view whose schema is marked [`SchemaBuilder::renders`] writes its own
 /// markup when a template outputs it directly (`{{ page.gallery }}`). That is
 /// how a custom block type renders itself.
 ///
 /// ```
-/// use luminess::{FieldId, Schema, Value, View};
+/// use luminess::{Schema, Value, View};
 ///
 /// struct Post { title: String, views: u32 }
 ///
 /// impl View for Post {
-///     fn field(&self, id: FieldId) -> Value<'_> {
-///         match id.index() {
+///     fn field(&self, index: usize) -> Value<'_> {
+///         match index {
 ///             0 => Value::Text(&self.title),
 ///             1 => Value::Int(i64::from(self.views)),
 ///             _ => Value::Absent,
@@ -55,22 +49,22 @@ impl FieldId {
 /// }
 ///
 /// let schema = Schema::build("post").text("title").int("views").finish();
-/// assert_eq!(schema.field("views").map(|(id, _)| id.index()), Some(1));
+/// assert_eq!(schema.field("views").map(|(index, _)| index), Some(1));
 /// ```
 pub trait View {
-    /// The value of the field with this id.
-    fn field(&self, id: FieldId) -> Value<'_>;
+    /// The value of the field at this index.
+    fn field(&self, index: usize) -> Value<'_>;
 
     /// Writes this value's own markup. Called only for views whose schema
     /// renders. The default writes nothing and fails.
     ///
     /// # Errors
     ///
-    /// A [`Failed`] makes the engine remove what this call wrote and write
+    /// A [`BlockError`] makes the engine remove what this call wrote and write
     /// [`View::fallback`] instead; the rest of the page still renders.
-    fn render(&self, out: &mut Output<'_>) -> Result<(), Failed> {
+    fn render(&self, out: &mut Output<'_>) -> Result<(), BlockError> {
         let _ = out;
-        Err(Failed::new("this value does not render itself"))
+        Err(BlockError::new("this value does not render itself"))
     }
 
     /// Written in place of [`View::render`] when it fails. The default writes
@@ -82,9 +76,10 @@ pub trait View {
     /// Answers a method the schema declared with
     /// [`SchemaBuilder::method`], called with arguments of the declared
     /// kinds. The default answers nothing.
-    fn call<'s>(&'s self, id: FieldId, args: &[Value<'_>]) -> Computed<'s> {
-        let _ = (id, args);
-        Computed::Value(Value::Absent)
+    /// `index` is the method's position in the schema, as for fields.
+    fn call<'s>(&'s self, index: usize, args: &[Value<'_>]) -> Answer<'s> {
+        let _ = (index, args);
+        Answer::Value(Value::Absent)
     }
 
     /// The plain-text form of a value that renders itself, used where markup
@@ -94,30 +89,35 @@ pub trait View {
     ///
     /// # Errors
     ///
-    /// A [`Failed`] when there is no text form or it cannot be produced.
-    fn text(&self, out: &mut String) -> Result<(), Failed> {
+    /// A [`BlockError`] when there is no text form or it cannot be produced.
+    fn text(&self, out: &mut String) -> Result<(), BlockError> {
         let _ = out;
-        Err(Failed::new("this value has no text form"))
+        Err(BlockError::new("this value has no text form"))
     }
 }
 
-/// What a method or an application filter returns: a value borrowed from
-/// the view, or text computed for this call.
+/// What a method ([`View::call`]) or an application filter
+/// ([`Builder::filter`](crate::Builder::filter)) answers: a value borrowed
+/// from the view, or text built for this call. Both convert with `.into()`.
+///
+/// The name says what it is for: the answer to a call. A [`Value`] alone
+/// cannot hold text built during the call, because it only borrows.
 #[derive(Debug)]
-pub enum Computed<'a> {
+#[non_exhaustive]
+pub enum Answer<'a> {
     /// A value, borrowed or scalar.
     Value(Value<'a>),
     /// Text built for this call, escaped like [`Value::Text`].
     Text(String),
 }
 
-impl<'a> From<Value<'a>> for Computed<'a> {
+impl<'a> From<Value<'a>> for Answer<'a> {
     fn from(v: Value<'a>) -> Self {
         Self::Value(v)
     }
 }
 
-impl From<String> for Computed<'_> {
+impl From<String> for Answer<'_> {
     fn from(s: String) -> Self {
         Self::Text(s)
     }
@@ -127,14 +127,14 @@ impl From<String> for Computed<'_> {
 /// [`Builder::filter`](crate::Builder::filter).
 pub(crate) trait FilterFn: Send + Sync + 'static {
     /// Applies the filter to `value` with the template's arguments.
-    fn apply<'v>(&self, value: Value<'v>, args: &[Value<'_>]) -> Computed<'v>;
+    fn apply<'v>(&self, value: Value<'v>, args: &[Value<'_>]) -> Answer<'v>;
 }
 
 impl<F> FilterFn for F
 where
-    F: for<'v, 'w> Fn(Value<'v>, &[Value<'w>]) -> Computed<'v> + Send + Sync + 'static,
+    F: for<'v, 'w> Fn(Value<'v>, &[Value<'w>]) -> Answer<'v> + Send + Sync + 'static,
 {
-    fn apply<'v>(&self, value: Value<'v>, args: &[Value<'_>]) -> Computed<'v> {
+    fn apply<'v>(&self, value: Value<'v>, args: &[Value<'_>]) -> Answer<'v> {
         self(value, args)
     }
 }
@@ -155,6 +155,7 @@ pub trait List {
 
 /// One value read from a [`View`] or a [`List`].
 #[derive(Clone, Copy)]
+#[non_exhaustive]
 pub enum Value<'a> {
     /// No value: writes nothing and is false in a condition.
     Absent,
@@ -324,13 +325,14 @@ impl<T: ToValue, const N: usize> List for [T; N] {
 fn same_kind(a: &Kind, b: &Kind) -> bool {
     match (a, b) {
         (Kind::List(x), Kind::List(y)) => same_kind(x, y),
-        (Kind::Object(x), Kind::Object(y)) => x.get().name() == y.get().name(),
+        (Kind::Object(x), Kind::Object(y)) => x.name() == y.name(),
         _ => std::mem::discriminant(a) == std::mem::discriminant(b),
     }
 }
 
 /// The kind of a field, which the compiler checks every use against.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub enum Kind {
     /// [`Value::Bool`].
     Bool,
@@ -343,7 +345,7 @@ pub enum Kind {
     /// [`Value::Html`]: trusted markup.
     Html,
     /// [`Value::View`] with this schema.
-    Object(SchemaRef),
+    Object(Schema),
     /// [`Value::List`] whose items have this kind.
     List(Box<Kind>),
 }
@@ -351,13 +353,13 @@ pub enum Kind {
 impl Kind {
     /// An object with the schema of `T`.
     #[must_use]
-    pub fn object_of<T: Shaped + ?Sized>() -> Self {
-        Self::Object(SchemaRef::Lazy(T::schema))
+    pub fn object_of<T: HasSchema + ?Sized>() -> Self {
+        Self::Object(Schema::lazy(T::schema))
     }
 
     /// A list of objects with the schema of `T`.
     #[must_use]
-    pub fn list_of<T: Shaped + ?Sized>() -> Self {
+    pub fn list_of<T: HasSchema + ?Sized>() -> Self {
         Self::List(Box::new(Self::object_of::<T>()))
     }
 
@@ -368,51 +370,11 @@ impl Kind {
     }
 }
 
-/// A schema, either built already or built on first use. The lazy form lets a
-/// type refer to itself (a comment with a list of replies).
-#[derive(Clone)]
-pub enum SchemaRef {
-    /// A schema built already.
-    Ready(Schema),
-    /// A function that returns the schema, called when the compiler needs it.
-    Lazy(fn() -> Schema),
-}
-
-impl SchemaRef {
-    /// The schema.
-    #[must_use]
-    pub fn get(&self) -> Schema {
-        match self {
-            Self::Ready(s) => s.clone(),
-            Self::Lazy(f) => f(),
-        }
-    }
-}
-
-impl fmt::Debug for SchemaRef {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Ready(s) => write!(f, "Ready({})", s.name()),
-            Self::Lazy(_) => f.write_str("Lazy(..)"),
-        }
-    }
-}
-
-impl From<Schema> for SchemaRef {
-    fn from(s: Schema) -> Self {
-        Self::Ready(s)
-    }
-}
-
-impl From<&Schema> for SchemaRef {
-    fn from(s: &Schema) -> Self {
-        Self::Ready(s.clone())
-    }
-}
-
-/// The fields a [`View`] answers: names, kinds, and ids.
+/// The fields a [`View`] answers: names, kinds, and indexes.
 ///
-/// Cloning is cheap (the schema is shared).
+/// Cloning is cheap (the schema is shared). A schema made by
+/// [`Kind::object_of`] is built on first use, which lets a type refer to
+/// itself (a comment with a list of replies).
 ///
 /// ```
 /// use luminess::{Kind, Schema};
@@ -421,13 +383,25 @@ impl From<&Schema> for SchemaRef {
 /// let page = Schema::build("page")
 ///     .text("title")
 ///     .html("body")
-///     .list("posts", Kind::Object(post.into()))
+///     .list("posts", Kind::Object(post))
 ///     .finish();
 /// assert_eq!(page.name(), "page");
 /// assert_eq!(page.len(), 3);
 /// ```
 #[derive(Clone)]
-pub struct Schema(Arc<SchemaInner>);
+pub struct Schema(Repr);
+
+#[derive(Clone)]
+enum Repr {
+    Ready(Arc<SchemaInner>),
+    /// Built on first use (`Kind::object_of`).
+    Lazy(Arc<LazySchema>),
+}
+
+struct LazySchema {
+    build: fn() -> Schema,
+    done: OnceLock<Arc<SchemaInner>>,
+}
 
 struct SchemaInner {
     name: Box<str>,
@@ -438,6 +412,28 @@ struct SchemaInner {
 }
 
 impl Schema {
+    /// A schema built by `build` the first time it is needed.
+    pub(crate) fn lazy(build: fn() -> Schema) -> Self {
+        Self(Repr::Lazy(Arc::new(LazySchema {
+            build,
+            done: OnceLock::new(),
+        })))
+    }
+
+    fn inner(&self) -> &SchemaInner {
+        match &self.0 {
+            Repr::Ready(a) => a,
+            Repr::Lazy(l) => l.done.get_or_init(|| (l.build)().into_arc()),
+        }
+    }
+
+    fn into_arc(self) -> Arc<SchemaInner> {
+        match self.0 {
+            Repr::Ready(a) => a,
+            Repr::Lazy(l) => Arc::clone(l.done.get_or_init(|| (l.build)().into_arc())),
+        }
+    }
+
     /// Starts a schema. `name` is how templates refer to a root value of this
     /// schema: a page view named `page` is read as `{{ page.title }}`.
     pub fn build(name: &str) -> SchemaBuilder {
@@ -452,25 +448,25 @@ impl Schema {
     /// The schema's name.
     #[must_use]
     pub fn name(&self) -> &str {
-        &self.0.name
+        &self.inner().name
     }
 
     /// The number of fields.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.0.fields.len()
+        self.inner().fields.len()
     }
 
     /// `true` when the schema has no fields.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.0.fields.is_empty()
+        self.inner().fields.is_empty()
     }
 
     /// `true` when views of this schema render their own markup.
     #[must_use]
     pub fn renders(&self) -> bool {
-        self.0.renders
+        self.inner().renders
     }
 
     /// `true` when a view answering `root` answers this schema too: every
@@ -478,10 +474,10 @@ impl Schema {
     /// in `root`. A template compiled against this schema can then be
     /// rendered with such a view.
     pub(crate) fn reads_as(&self, root: &Schema) -> bool {
-        if Arc::ptr_eq(&self.0, &root.0) {
+        let (a, b) = (self.inner(), root.inner());
+        if std::ptr::eq(a, b) {
             return true;
         }
-        let (a, b) = (&*self.0, &*root.0);
         a.fields.len() <= b.fields.len()
             && a.fields
                 .iter()
@@ -501,40 +497,51 @@ impl Schema {
                 })
     }
 
-    /// The id and kind of the field called `name`.
+    /// The index and kind of the field called `name`.
     #[must_use]
-    pub fn field(&self, name: &str) -> Option<(FieldId, &Kind)> {
-        let i = self.0.fields.iter().position(|(n, _)| &**n == name)?;
-        self.0.params[i]
+    pub fn field(&self, name: &str) -> Option<(usize, &Kind)> {
+        self.field_id(name).map(|(id, k)| (id.index(), k))
+    }
+
+    /// The index, parameter kinds, and return kind of the method called
+    /// `name`.
+    #[must_use]
+    pub fn method(&self, name: &str) -> Option<(usize, &[Kind], &Kind)> {
+        self.method_id(name).map(|(id, p, k)| (id.index(), p, k))
+    }
+
+    pub(crate) fn field_id(&self, name: &str) -> Option<(FieldId, &Kind)> {
+        let inner = self.inner();
+        let i = inner.fields.iter().position(|(n, _)| &**n == name)?;
+        inner.params[i]
             .is_none()
-            .then(|| (FieldId(i as u16), &self.0.fields[i].1))
+            .then(|| (FieldId(i as u16), &inner.fields[i].1))
     }
 
-    /// The id, parameter kinds, and return kind of the method called `name`.
-    #[must_use]
-    pub fn method(&self, name: &str) -> Option<(FieldId, &[Kind], &Kind)> {
-        let i = self.0.fields.iter().position(|(n, _)| &**n == name)?;
-        let params = self.0.params[i].as_deref()?;
-        Some((FieldId(i as u16), params, &self.0.fields[i].1))
+    pub(crate) fn method_id(&self, name: &str) -> Option<(FieldId, &[Kind], &Kind)> {
+        let inner = self.inner();
+        let i = inner.fields.iter().position(|(n, _)| &**n == name)?;
+        let params = inner.params[i].as_deref()?;
+        Some((FieldId(i as u16), params, &inner.fields[i].1))
     }
 
-    /// The field names, in id order.
+    /// The field and method names, in index order.
     pub fn names(&self) -> impl Iterator<Item = &str> {
-        self.0.fields.iter().map(|(n, _)| &**n)
+        self.inner().fields.iter().map(|(n, _)| &**n)
     }
 }
 
 impl fmt::Debug for Schema {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Schema")
-            .field("name", &self.0.name)
-            .field("fields", &self.0.fields)
-            .field("renders", &self.0.renders)
+            .field("name", &self.inner().name)
+            .field("fields", &self.inner().fields)
+            .field("renders", &self.inner().renders)
             .finish()
     }
 }
 
-/// Builds a [`Schema`]. Each field gets the next id, starting at `0`.
+/// Builds a [`Schema`]. Each field gets the next index, starting at `0`.
 #[derive(Debug)]
 #[must_use]
 pub struct SchemaBuilder {
@@ -608,8 +615,8 @@ impl SchemaBuilder {
     }
 
     /// Adds an object field with its own schema.
-    pub fn object(self, name: &str, schema: impl Into<SchemaRef>) -> Self {
-        self.field(name, Kind::Object(schema.into()))
+    pub fn object(self, name: &str, schema: Schema) -> Self {
+        self.field(name, Kind::Object(schema))
     }
 
     /// Adds a list field whose items have `item` kind.
@@ -627,20 +634,81 @@ impl SchemaBuilder {
     /// The finished schema.
     #[must_use]
     pub fn finish(self) -> Schema {
-        Schema(Arc::new(SchemaInner {
+        Schema(Repr::Ready(Arc::new(SchemaInner {
             name: self.name,
             fields: self.fields,
             params: self.params,
             renders: self.renders,
-        }))
+        })))
     }
 }
 
-/// A Rust type with a fixed schema. [`view!`](crate::view!) implements it, and
-/// [`Engine::builder`](crate::Engine::builder) uses it.
-pub trait Shaped {
+/// A Rust type whose schema is fixed: what `Engine::<V>` needs to compile
+/// templates without being handed a schema. [`view!`](crate::view!)
+/// implements it; implement it by hand only for views written by hand.
+pub trait HasSchema {
     /// The schema of this type.
     fn schema() -> Schema;
+}
+
+/// Markup the application trusts: written as is in HTML text, escaped
+/// anywhere else. A field declared `html` in [`view!`](crate::view) can hold
+/// a `String`; the items of a `list(html)` field are `Html`, so a list of
+/// plain strings is never taken for markup by mistake.
+///
+/// ```
+/// use luminess::{Html, Template};
+///
+/// struct Page { snippets: Vec<Html> }
+/// luminess::view!(Page as "page" { snippets: list(html) });
+///
+/// let page = Page { snippets: vec![Html::from("<b>sanitized</b>")] };
+/// let t = Template::<Page>::new("{% for s in page.snippets %}{{ s }}{% endfor %}")?;
+/// assert_eq!(t.render(&page)?, "<b>sanitized</b>");
+/// # Ok::<(), luminess::Error>(())
+/// ```
+///
+/// A list of plain strings declared `list(html)` does not compile:
+///
+/// ```compile_fail
+/// struct Page { snippets: Vec<String> }
+/// luminess::view!(Page as "page" { snippets: list(html) });
+/// ```
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct Html(pub String);
+
+impl From<String> for Html {
+    fn from(s: String) -> Self {
+        Self(s)
+    }
+}
+
+impl From<&str> for Html {
+    fn from(s: &str) -> Self {
+        Self(s.to_owned())
+    }
+}
+
+impl ToValue for Html {
+    fn to_value(&self) -> Value<'_> {
+        Value::Html(&self.0)
+    }
+}
+
+/// The types a `list(html)` field of [`view!`](crate::view) may have.
+#[doc(hidden)]
+#[diagnostic::on_unimplemented(
+    message = "a `list(html)` field holds `luminess::Html` items",
+    label = "use `Vec<luminess::Html>` here, or declare the field `list(text)`"
+)]
+pub trait __HtmlItems: ToValue {}
+impl __HtmlItems for Vec<Html> {}
+impl<const N: usize> __HtmlItems for [Html; N] {}
+
+#[doc(hidden)]
+#[must_use]
+pub fn __html_list<L: __HtmlItems>(l: &L) -> Value<'_> {
+    l.to_value()
 }
 
 #[doc(hidden)]
@@ -652,7 +720,7 @@ pub fn __html(v: Value<'_>) -> Value<'_> {
     }
 }
 
-/// Implements [`View`], [`Shaped`], and [`ToValue`] for a struct from a list of
+/// Implements [`View`], [`HasSchema`], and [`ToValue`] for a struct from a list of
 /// its fields and their kinds.
 ///
 /// Kinds: `text`, `html`, `int`, `float`, `bool`, `object(Type)`, and
@@ -677,14 +745,14 @@ pub fn __html(v: Value<'_>) -> Value<'_> {
 ///     subtitle: None,
 /// };
 /// assert_eq!(
-///     engine.render_to_string("home", &page).unwrap(),
+///     engine.render("home", &page).unwrap(),
 ///     "<h1>News &amp; notes</h1><a href=\"/first\">First</a>"
 /// );
 /// ```
 #[macro_export]
 macro_rules! view {
     ($ty:ty as $name:literal { $($field:ident : $kind:ident $(( $($arg:tt)* ))?),* $(,)? }) => {
-        impl $crate::Shaped for $ty {
+        impl $crate::HasSchema for $ty {
             fn schema() -> $crate::Schema {
                 static SCHEMA: ::std::sync::OnceLock<$crate::Schema> = ::std::sync::OnceLock::new();
                 SCHEMA
@@ -698,7 +766,7 @@ macro_rules! view {
         }
 
         impl $crate::View for $ty {
-            fn field(&self, id: $crate::FieldId) -> $crate::Value<'_> {
+            fn field(&self, index: usize) -> $crate::Value<'_> {
                 // One constant per field, numbered by an enum in declaration
                 // order, so the match below is a jump table.
                 mod __ids {
@@ -707,8 +775,8 @@ macro_rules! view {
                     enum Field { $($field),* }
                     $(pub const $field: usize = Field::$field as usize;)*
                 }
-                match id.index() {
-                    $(__ids::$field => $crate::view!(@value self.$field, $kind),)*
+                match index {
+                    $(__ids::$field => $crate::view!(@value self.$field, $kind $(( $($arg)* ))?),)*
                     _ => $crate::Value::Absent,
                 }
             }
@@ -732,5 +800,6 @@ macro_rules! view {
     };
 
     (@value $e:expr, html) => { $crate::__html($crate::ToValue::to_value(&$e)) };
-    (@value $e:expr, $other:ident) => { $crate::ToValue::to_value(&$e) };
+    (@value $e:expr, list(html)) => { $crate::__html_list(&$e) };
+    (@value $e:expr, $other:ident $(( $($arg:tt)* ))?) => { $crate::ToValue::to_value(&$e) };
 }

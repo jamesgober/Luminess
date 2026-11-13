@@ -51,7 +51,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ],
     };
     let mut out = Vec::new();
-    let rendered = engine.render("page", &page, &mut out)?;
+    let rendered = engine.render_into("page", &page, &mut out)?;
     print!("{}", String::from_utf8(out)?);
     eprintln!("{} bytes", rendered.bytes());
     Ok(())

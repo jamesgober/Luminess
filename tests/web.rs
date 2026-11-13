@@ -65,14 +65,14 @@ fn ids_survive_reloads() {
     let a = engine.template("a").unwrap();
     let b = engine.template("b").unwrap();
     // A new theme with the templates in another order, and a new one.
-    engine
-        .reload(
-            Engine::<Page>::builder()
-                .template("c", "C")
-                .template("b", "B2")
-                .template("a", "A2"),
-        )
-        .unwrap();
+    engine.replace(
+        Engine::<Page>::builder()
+            .template("c", "C")
+            .template("b", "B2")
+            .template("a", "A2")
+            .build()
+            .unwrap(),
+    );
     let mut buf = Vec::new();
     Render::render(&engine, a, &page(), &mut Output::new(&mut buf, 1 << 20)).unwrap();
     assert_eq!(buf, b"A2");
@@ -80,9 +80,12 @@ fn ids_survive_reloads() {
     Render::render(&engine, b, &page(), &mut Output::new(&mut buf, 1 << 20)).unwrap();
     assert_eq!(buf, b"B2");
     // A reload that drops a template: its id answers not_found.
-    engine
-        .reload(Engine::<Page>::builder().template("b", "B3"))
-        .unwrap();
+    engine.replace(
+        Engine::<Page>::builder()
+            .template("b", "B3")
+            .build()
+            .unwrap(),
+    );
     buf.clear();
     let err = Render::render(&engine, a, &page(), &mut Output::new(&mut buf, 1 << 20)).unwrap_err();
     assert_eq!(err.code(), "luminess.not_found");
@@ -163,4 +166,50 @@ fn themes_render_error_pages() {
             .unwrap()
     );
     assert!(buf.is_empty());
+}
+
+#[test]
+fn the_budget_is_kept_while_rendering() {
+    let engine = Engine::<Page>::builder()
+        .template("t", "{% for i in page.items %}{{ i }}{% endfor %}")
+        .build()
+        .unwrap();
+    // 40 items of 50 bytes: 2,000 bytes, past a budget of 500. The render
+    // stops at the budget instead of building the whole page first.
+    assert_eq!(render(&engine, "t", 500).unwrap_err(), "luminess.too_large");
+    assert_eq!(render(&engine, "t", 4_000).unwrap().len(), 2_000);
+}
+
+#[test]
+fn error_pages_link_inside_the_site_folder() {
+    let pages = Engine::<Page>::builder()
+        .template("home", "x")
+        .build()
+        .unwrap();
+    let errors = Engine::<ErrorView>::builder()
+        .template(
+            "error",
+            "<link rel=\"stylesheet\" href=\"{{ error.base }}/static/site.css\"><a href=\"{{ error.base }}/\">home</a>",
+        )
+        .build()
+        .unwrap();
+    let theme = Theme::new(pages).with_error_pages(errors);
+    let render = |page: web_net::ErrorPage<'_>| {
+        let mut buf = Vec::new();
+        assert!(
+            theme
+                .error_page(&page, &mut Output::new(&mut buf, 1 << 20))
+                .unwrap()
+        );
+        String::from_utf8(buf).unwrap()
+    };
+    let p = web_net::ErrorPage::new(404, "Not Found", "-", "r");
+    assert_eq!(
+        render(p.with_base("/blog")),
+        "<link rel=\"stylesheet\" href=\"/blog/static/site.css\"><a href=\"/blog/\">home</a>"
+    );
+    assert_eq!(
+        render(p),
+        "<link rel=\"stylesheet\" href=\"/static/site.css\"><a href=\"/\">home</a>"
+    );
 }

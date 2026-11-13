@@ -1,7 +1,3 @@
-# Development (dev/ is committed; .dev/ and .claude/ stay local)
-/.dev
-/.claude
-
 # Rust / Cargo
 /target/
 **/*.rs.bk

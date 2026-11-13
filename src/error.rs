@@ -1,6 +1,6 @@
 //! Compile and render errors.
 
-use std::fmt;
+use std::{fmt, io, sync::Arc};
 
 /// One problem in a template, with where it is.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -125,19 +125,97 @@ fn line_col(src: &str, at: usize) -> (u32, u32) {
     )
 }
 
-/// Every problem found while compiling a template set. Nothing is compiled
-/// unless every template is free of them.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CompileError {
-    diagnostics: Vec<Diagnostic>,
+/// What went wrong.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ErrorKind {
+    /// One or more templates have mistakes:
+    /// [`Error::diagnostics`] lists them all. Nothing was compiled.
+    Compile,
+    /// A template folder or file could not be read.
+    Io,
+    /// No template has the name asked for. Nothing was written.
+    NotFound,
+    /// The output passed the limit set with
+    /// [`Builder::max_output`](crate::Builder::max_output). What the render
+    /// wrote is removed.
+    TooLarge,
 }
 
-impl CompileError {
-    pub(crate) fn new(diagnostics: Vec<Diagnostic>) -> Self {
-        Self { diagnostics }
+/// Every error Luminess returns: one type, so `?` works from loading a
+/// theme to rendering a page. [`Error::kind`] says which it is.
+///
+/// A block that fails while rendering is not an error: it gets its fallback,
+/// and [`Rendered`](crate::Rendered) reports it.
+#[derive(Clone, Debug)]
+pub struct Error {
+    kind: ErrorKind,
+    /// The problems, for [`ErrorKind::Compile`].
+    diagnostics: Vec<Diagnostic>,
+    /// The template asked for, for [`ErrorKind::NotFound`] and
+    /// [`ErrorKind::TooLarge`]; the path, for [`ErrorKind::Io`].
+    subject: Box<str>,
+    limit: usize,
+    io: Option<Arc<io::Error>>,
+}
+
+impl Error {
+    pub(crate) fn compile(diagnostics: Vec<Diagnostic>) -> Self {
+        Self {
+            kind: ErrorKind::Compile,
+            diagnostics,
+            subject: "".into(),
+            limit: 0,
+            io: None,
+        }
     }
 
-    /// The problems, in template order.
+    pub(crate) fn io(path: &std::path::Path, e: io::Error) -> Self {
+        Self {
+            kind: ErrorKind::Io,
+            diagnostics: Vec::new(),
+            subject: path.display().to_string().into(),
+            limit: 0,
+            io: Some(Arc::new(e)),
+        }
+    }
+
+    pub(crate) fn not_found(name: &str) -> Self {
+        Self {
+            kind: ErrorKind::NotFound,
+            diagnostics: Vec::new(),
+            subject: name.into(),
+            limit: 0,
+            io: None,
+        }
+    }
+
+    pub(crate) fn too_large(name: &str, limit: usize) -> Self {
+        Self {
+            kind: ErrorKind::TooLarge,
+            diagnostics: Vec::new(),
+            subject: name.into(),
+            limit,
+            io: None,
+        }
+    }
+
+    /// What went wrong.
+    #[must_use]
+    pub fn kind(&self) -> ErrorKind {
+        self.kind
+    }
+
+    /// The template asked for ([`ErrorKind::NotFound`],
+    /// [`ErrorKind::TooLarge`]), or the path that could not be read
+    /// ([`ErrorKind::Io`]); empty for compile errors.
+    #[must_use]
+    pub fn template(&self) -> &str {
+        &self.subject
+    }
+
+    /// Every problem in every template, for [`ErrorKind::Compile`]; empty
+    /// otherwise.
     #[must_use]
     pub fn diagnostics(&self) -> &[Diagnostic] {
         &self.diagnostics
@@ -162,8 +240,14 @@ impl CompileError {
     ///   |             ^
     /// ");
     /// ```
+    ///
+    /// For an error other than [`ErrorKind::Compile`], the report is its
+    /// one-line message.
     #[must_use]
     pub fn report(&self) -> String {
+        if self.kind != ErrorKind::Compile {
+            return format!("error: {self}\n");
+        }
         let mut out = String::new();
         for (i, d) in self.diagnostics.iter().enumerate() {
             if i > 0 {
@@ -174,7 +258,7 @@ impl CompileError {
         out
     }
 
-    /// [`CompileError::report`] as an HTML fragment (a `<pre>` element, every
+    /// [`Error::report`] as an HTML fragment (a `<pre>` element, every
     /// character escaped), for a development error page. Never show it to
     /// visitors of a live site: it reveals template source.
     #[must_use]
@@ -187,84 +271,38 @@ impl CompileError {
     }
 }
 
-impl fmt::Display for CompileError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let n = self.diagnostics.len();
-        write!(f, "{n} template error{}", if n == 1 { "" } else { "s" })?;
-        for d in &self.diagnostics {
-            write!(f, "\n  {d}")?;
-        }
-        Ok(())
-    }
-}
-
-impl std::error::Error for CompileError {}
-
-/// What went wrong in a render.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum RenderErrorKind {
-    /// No template has the name asked for.
-    NotFound,
-    /// The output passed the limit set with
-    /// [`Builder::max_output`](crate::Builder::max_output). What the render
-    /// wrote is removed.
-    TooLarge,
-}
-
-/// A render that could not start. A block that fails while rendering is not
-/// an error: it gets its fallback, and [`Rendered`](crate::Rendered) reports it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RenderError {
-    kind: RenderErrorKind,
-    template: Box<str>,
-    limit: usize,
-}
-
-impl RenderError {
-    pub(crate) fn not_found(name: &str) -> Self {
-        Self {
-            kind: RenderErrorKind::NotFound,
-            template: name.into(),
-            limit: 0,
-        }
-    }
-
-    pub(crate) fn too_large(name: &str, limit: usize) -> Self {
-        Self {
-            kind: RenderErrorKind::TooLarge,
-            template: name.into(),
-            limit,
-        }
-    }
-
-    /// What went wrong.
-    #[must_use]
-    pub fn kind(&self) -> RenderErrorKind {
-        self.kind
-    }
-
-    /// The template name asked for.
-    #[must_use]
-    pub fn template(&self) -> &str {
-        &self.template
-    }
-}
-
-impl fmt::Display for RenderError {
+impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.kind {
-            RenderErrorKind::NotFound => write!(f, "no template named `{}`", self.template),
-            RenderErrorKind::TooLarge => write!(
+            ErrorKind::Compile => {
+                let n = self.diagnostics.len();
+                write!(f, "{n} template error{}", if n == 1 { "" } else { "s" })?;
+                for d in &self.diagnostics {
+                    write!(f, "\n  {d}")?;
+                }
+                Ok(())
+            }
+            ErrorKind::Io => match &self.io {
+                Some(e) => write!(f, "could not read `{}`: {e}", self.subject),
+                None => write!(f, "could not read `{}`", self.subject),
+            },
+            ErrorKind::NotFound => write!(f, "no template named `{}`", self.subject),
+            ErrorKind::TooLarge => write!(
                 f,
                 "the output of `{}` passed the limit of {} bytes",
-                self.template, self.limit
+                self.subject, self.limit
             ),
         }
     }
 }
 
-impl std::error::Error for RenderError {}
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.io
+            .as_deref()
+            .map(|e| e as &(dyn std::error::Error + 'static))
+    }
+}
 
 #[cfg(test)]
 mod tests {

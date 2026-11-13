@@ -5,9 +5,9 @@ use std::{borrow::Cow, fmt::Write as _, sync::Arc};
 use crate::{
     compile::{CExpr, CNode, Esc, Filt, LoopAttr, Program, Step},
     escape,
-    output::{Failed, Output},
+    output::{BlockError, Output},
     parse::CmpOp,
-    view::{Computed, FieldId, FilterFn, List, Value, View},
+    view::{Answer, FieldId, FilterFn, List, Value, View},
 };
 
 /// Writes an integer in decimal.
@@ -45,12 +45,29 @@ fn write_float(f: f64, out: &mut Vec<u8>, scratch: &mut String) {
     out.extend_from_slice(scratch.as_bytes());
 }
 
-/// What one render reports besides its output.
+/// What one render reports besides its output: how many bytes it wrote and
+/// which blocks fell back. From [`Engine::render_into`](crate::Engine::render_into)
+/// and [`Template::render_into`](crate::Template::render_into).
+///
+/// ```
+/// use luminess::Template;
+///
+/// struct Page { title: String }
+/// luminess::view!(Page as "page" { title: text });
+///
+/// let mut out = Vec::new();
+/// let report = Template::<Page>::new("<h1>{{ page.title }}</h1>")?
+///     .render_into(&Page { title: "Hi".into() }, &mut out)?;
+/// assert_eq!(report.bytes(), 11);
+/// assert_eq!(report.fallbacks(), 0);
+/// assert!(report.failures().is_empty());
+/// # Ok::<(), luminess::Error>(())
+/// ```
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Rendered {
     bytes: usize,
     fallbacks: u32,
-    failures: Vec<Failed>,
+    failures: Vec<BlockError>,
 }
 
 impl Rendered {
@@ -63,29 +80,18 @@ impl Rendered {
         self.bytes
     }
 
-    /// How many blocks failed and were replaced by their fallback.
+    /// How many blocks failed and were replaced by their fallback, counting
+    /// past [`Rendered::MAX_FAILURES`].
     #[must_use]
     pub fn fallbacks(&self) -> u32 {
         self.fallbacks
     }
 
-    /// The first block failure, for the log.
-    #[must_use]
-    pub fn first_failure(&self) -> Option<&Failed> {
-        self.failures.first()
-    }
-
     /// The block failures, in the order they happened: at most
-    /// [`Rendered::MAX_FAILURES`]; [`Rendered::fallbacks`] counts them all.
+    /// [`Rendered::MAX_FAILURES`]. Empty when every block rendered.
     #[must_use]
-    pub fn failures(&self) -> &[Failed] {
+    pub fn failures(&self) -> &[BlockError] {
         &self.failures
-    }
-
-    /// `true` when no block failed.
-    #[must_use]
-    pub fn is_complete(&self) -> bool {
-        self.fallbacks == 0
     }
 }
 
@@ -97,6 +103,9 @@ struct Slot<'a> {
     /// A `set` value that is text a filter built: its index in `Run::texts`.
     text: Option<usize>,
 }
+
+/// Call arguments up to this many are evaluated without allocating.
+const ARGS_INLINE: usize = 4;
 
 /// A value during evaluation: a view's value, or text a filter produced.
 enum Val<'a> {
@@ -112,7 +121,7 @@ struct Run<'a, 'o> {
     out: &'o mut Vec<u8>,
     scratch: String,
     fallbacks: u32,
-    failures: Vec<Failed>,
+    failures: Vec<BlockError>,
     /// The output length past which the render stops: `start + limit`.
     end: usize,
     /// The limit was passed: stop.
@@ -498,7 +507,7 @@ impl<'a> Run<'a, '_> {
             CExpr::Filter(f, x, args) => {
                 let v = self.eval(x);
                 match f {
-                    Filt::Custom(i) => self.custom(usize::from(*i), v, args),
+                    Filt::Custom(i) => self.custom(usize::from(*i), &v, args),
                     Filt::First | Filt::Last => match v {
                         Val::V(Value::List(l)) if !l.is_empty() => {
                             Val::V(l.get(if *f == Filt::First { 0 } else { l.len() - 1 }))
@@ -608,7 +617,7 @@ impl<'a> Run<'a, '_> {
         for step in steps {
             let Step::Field(id) = step else { return None };
             v = match v {
-                Value::View(x) => x.field(*id),
+                Value::View(x) => x.field(id.index()),
                 _ => Value::Absent,
             };
         }
@@ -622,36 +631,56 @@ impl<'a> Run<'a, '_> {
                 return Val::V(Value::Absent);
             };
             v = match step {
-                Step::Field(id) => Val::V(x.field(*id)),
+                Step::Field(id) => Val::V(x.field(id.index())),
                 Step::Call(id, args) => self.call(x, *id, args),
             };
         }
         v
     }
 
-    fn call(&mut self, x: &'a dyn View, id: FieldId, args: &'a [CExpr]) -> Val<'a> {
-        let vals: Vec<Val<'a>> = args.iter().map(|a| self.eval(a)).collect();
-        let values: Vec<Value<'_>> = vals.iter().map(as_value).collect();
-        match x.call(id, &values) {
-            Computed::Value(v) => Val::V(v),
-            Computed::Text(s) => Val::Owned(s),
+    /// Evaluates call arguments, in place when there are a few.
+    fn with_args<R>(
+        &mut self,
+        args: &'a [CExpr],
+        f: impl FnOnce(&mut Self, &[Value<'_>]) -> R,
+    ) -> R {
+        if args.len() <= ARGS_INLINE {
+            let mut vals = [const { Val::V(Value::Absent) }; ARGS_INLINE];
+            for (slot, a) in vals.iter_mut().zip(args) {
+                *slot = self.eval(a);
+            }
+            let mut values = [Value::Absent; ARGS_INLINE];
+            for (value, v) in values.iter_mut().zip(&vals) {
+                *value = as_value(v);
+            }
+            f(self, &values[..args.len()])
+        } else {
+            let vals: Vec<Val<'a>> = args.iter().map(|a| self.eval(a)).collect();
+            let values: Vec<Value<'_>> = vals.iter().map(as_value).collect();
+            f(self, &values)
         }
     }
 
-    fn custom(&mut self, i: usize, v: Val<'a>, args: &'a [CExpr]) -> Val<'a> {
-        let vals: Vec<Val<'a>> = args.iter().map(|a| self.eval(a)).collect();
-        let values: Vec<Value<'_>> = vals.iter().map(as_value).collect();
-        let f = &self.filters[i];
-        match v {
-            Val::V(value) => match f.apply(value, &values) {
-                Computed::Value(v) => Val::V(v),
-                Computed::Text(s) => Val::Owned(s),
+    fn call(&mut self, x: &'a dyn View, id: FieldId, args: &'a [CExpr]) -> Val<'a> {
+        self.with_args(args, |_, values| match x.call(id.index(), values) {
+            Answer::Value(v) => Val::V(v),
+            Answer::Text(s) => Val::Owned(s),
+        })
+    }
+
+    fn custom(&mut self, i: usize, v: &Val<'a>, args: &'a [CExpr]) -> Val<'a> {
+        let filters = self.filters;
+        let f = &filters[i];
+        self.with_args(args, |_, values| match v {
+            Val::V(value) => match f.apply(*value, values) {
+                Answer::Value(v) => Val::V(v),
+                Answer::Text(s) => Val::Owned(s),
             },
-            Val::Owned(s) => match f.apply(Value::Text(&s), &values) {
-                Computed::Value(v) => detach(v),
-                Computed::Text(t) => Val::Owned(t),
+            Val::Owned(s) => match f.apply(Value::Text(s), values) {
+                Answer::Value(v) => detach(v),
+                Answer::Text(t) => Val::Owned(t),
             },
-        }
+        })
     }
 
     /// The text form of a scalar value.
@@ -686,9 +715,8 @@ impl<'a> Run<'a, '_> {
             _ => match (num(x), num(y)) {
                 (Some(a), Some(b)) => a.partial_cmp(&b),
                 _ => {
-                    let a = Self::text(x).into_owned();
-                    let b = Self::text(y);
-                    Some(a.as_str().cmp(&b))
+                    let (a, b) = (Self::text(x), Self::text(y));
+                    Some(a.as_ref().cmp(b.as_ref()))
                 }
             },
         };
@@ -714,7 +742,7 @@ impl<'a> Run<'a, '_> {
         };
         for id in ids {
             v = match v {
-                Value::View(x) => x.field(*id),
+                Value::View(x) => x.field(id.index()),
                 _ => Value::Absent,
             };
         }
@@ -726,8 +754,11 @@ impl<'a> Run<'a, '_> {
     #[inline]
     fn write_value(&mut self, v: Value<'a>, esc: Esc) {
         match (v, esc) {
-            (Value::Text(s), Esc::Text | Esc::Attr) => escape::html(s, self.out),
-            (Value::Text(s) | Value::Html(s), Esc::Raw) | (Value::Html(s), Esc::Text) => {
+            (Value::Text(s) | Value::Html(s), Esc::Text)
+            | (Value::Text(s), Esc::Attr | Esc::Html) => {
+                escape::html(s, self.out);
+            }
+            (Value::Text(s) | Value::Html(s), Esc::Raw) | (Value::Html(s), Esc::Html) => {
                 self.out.extend_from_slice(s.as_bytes());
             }
             (Value::Text(s), Esc::UrlStart) => {
@@ -742,7 +773,13 @@ impl<'a> Run<'a, '_> {
             (Value::Text(s), Esc::UrlQuery) => escape::url_component(s, self.out),
             (
                 Value::Int(i),
-                Esc::Text | Esc::Attr | Esc::Raw | Esc::UrlPath | Esc::UrlOpen | Esc::UrlQuery,
+                Esc::Text
+                | Esc::Html
+                | Esc::Attr
+                | Esc::Raw
+                | Esc::UrlPath
+                | Esc::UrlOpen
+                | Esc::UrlQuery,
             ) => {
                 write_int(i, self.out);
             }
@@ -806,7 +843,7 @@ impl<'a> Run<'a, '_> {
                 Value::Float(f) => write_float(f, self.out, &mut self.scratch),
                 Value::Text(s) => self.text_out(s, esc),
                 Value::Html(s) => {
-                    if matches!(esc, Esc::Text | Esc::Raw) {
+                    if matches!(esc, Esc::Html | Esc::Raw) {
                         self.out.extend_from_slice(s.as_bytes());
                     } else {
                         self.text_out(s, esc);
@@ -826,7 +863,7 @@ impl<'a> Run<'a, '_> {
 
     fn text_out(&mut self, s: &str, esc: Esc) {
         match esc {
-            Esc::Text | Esc::Attr => escape::html(s, self.out),
+            Esc::Text | Esc::Html | Esc::Attr => escape::html(s, self.out),
             Esc::UrlStart => {
                 if escape::url_allowed(s) {
                     escape::url(s, self.out);

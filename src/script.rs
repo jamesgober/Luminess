@@ -391,6 +391,11 @@ impl Js {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Css {
     Code,
+    /// In code, right after an output: a value ending in `/` and a literal
+    /// `*` would open a comment, and two values side by side would join.
+    AfterValue,
+    /// A literal `*` came right after an output: a compile error.
+    Broken,
     /// After `/` in code.
     Slash,
     /// After `\` in code.
@@ -411,6 +416,11 @@ impl Css {
                 b'\\' => Self::Esc,
                 _ => Self::Code,
             },
+            Self::AfterValue => match c {
+                b'*' => Self::Broken,
+                _ => Self::Code.step(c),
+            },
+            Self::Broken => Self::Broken,
             Self::Slash => match c {
                 b'*' => Self::Comment,
                 _ => Self::Code.step(c),
@@ -438,7 +448,7 @@ impl Css {
 
     pub(crate) fn describe(self) -> &'static str {
         match self {
-            Self::Code | Self::Slash | Self::Esc => "CSS",
+            Self::Code | Self::AfterValue | Self::Broken | Self::Slash | Self::Esc => "CSS",
             Self::Str(_) | Self::StrEsc(_) => "a CSS string",
             Self::Comment | Self::CommentStar => "a CSS comment",
             Self::Lost => "CSS the compiler cannot follow",

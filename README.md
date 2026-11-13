@@ -1,70 +1,135 @@
-# Luminess
+<h1 align="center">
+    <img width="99" alt="Rust logo" src="https://raw.githubusercontent.com/jamesgober/rust-collection/72baabd71f00e14aa9184efcb16fa3deddda3a0a/assets/rust-logo.svg">
+    <br>
+    <b>Luminess</b>
+    <br>
+    <sub>
+        <sup>TEMPLATES CHECKED AT STARTUP, ESCAPED FOR WHERE THEY GO</sup>
+    </sub>
+</h1>
 
-A template engine for Rust that compiles once, at startup, against typed views.
+<p align="center">
+    <a href="https://crates.io/crates/luminess"><img src="https://img.shields.io/crates/v/luminess.svg" alt="Crates.io"></a>
+    <a href="https://crates.io/crates/luminess" alt="Download"><img alt="Crates.io Downloads" src="https://img.shields.io/crates/d/luminess?color=%230099ff"></a>
+    <a href="https://docs.rs/luminess"><img src="https://docs.rs/luminess/badge.svg" alt="Documentation"></a>
+    <a href="https://github.com/jamesgober/Luminess/actions"><img alt="GitHub CI" src="https://github.com/jamesgober/Luminess/actions/workflows/ci.yml/badge.svg"></a>
+    <img src="https://img.shields.io/badge/MSRV-1.85-orange.svg" alt="MSRV 1.85">
+    <a href="#license"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License"></a>
+</p>
 
-[![crates.io](https://img.shields.io/crates/v/luminess.svg)](https://crates.io/crates/luminess)
-[![docs.rs](https://docs.rs/luminess/badge.svg)](https://docs.rs/luminess)
-[![CI](https://github.com/jamesgober/Luminess/actions/workflows/ci.yml/badge.svg)](https://github.com/jamesgober/Luminess/actions/workflows/ci.yml)
+<p align="center">
+    <b>A template engine for Rust that compiles your theme once, against your own types.</b>
+    <br>
+    <i>A misspelled field fails at startup, not as a blank page; every value is escaped for the place it lands.</i>
+</p>
 
-- **Mistakes fail at startup.** Templates compile against a schema of your
-  types. `{{ page.titel }}` is a compile error with the template, line,
-  column, and "did you mean `title`?", not an empty string in production.
-- **Escaped for where it goes.** The compiler follows the HTML around each
-  `{{ }}` and picks the escaper: HTML text, attribute value, URL (with a
-  scheme check, so `javascript:` never reaches an `href`), JavaScript, or
-  CSS. Places where no escaper is safe, such as an unquoted attribute, an
-  HTML comment, or a JavaScript regular expression, are refused at compile
-  time.
-- **No data conversion.** No JSON, no maps, no serde. A render reads your
-  values through a small trait by field ids the compiler resolved, and writes
-  straight into your `Vec<u8>`.
-- **Blocks render themselves, and fail alone.** A value can write its own
-  markup (a gallery, a price table). If it fails, its output is removed, its
-  fallback is written, and the rest of the page renders.
-- **Live reload.** Swap in a new theme while serving. A theme with errors is
-  refused and the running one stays.
-- **Fast.** A typical 10 KiB page renders in about 4 µs, 4 to 7 times
-  faster than Tera and MiniJinja.
-- **Zero dependencies.**
+<br>
 
-## Install
+<p>
+    <strong>Luminess</strong> renders HTML from templates in a Jinja-like syntax. It compiles a whole theme when your program starts, checks every name in it against the Rust types you render, and then renders pages in a few microseconds by reading your values in place and writing straight into a buffer.
+</p>
+
+<p>
+    Where most template engines take a map of loosely typed values and escape everything as HTML text, <strong>Luminess</strong> knows the type of every field and the HTML context of every output. An unknown field, filter, template, or block is an error with its line and column before the first request, and each value gets the escaping its place needs: HTML text, attribute, URL (with a scheme check), JavaScript, or CSS.
+</p>
+
+<p>
+    It reloads a theme while serving, lets a block (a gallery, a stock level) render itself and fall back alone when it fails, and has no dependencies.
+</p>
+
+---
+
+## Features
+
+### **Checked at startup**
+- **Typed views** - templates compile against your types; a misspelled field or a list used as text is an error with "did you mean"
+- **Every error at once** - all mistakes in all templates, with template, line, column, and the source line
+- **One error type** - loading, compiling, and rendering return the same `Error`, so `?` just works
+
+### **Escaped for where it goes**
+- **Contextual escaping** - HTML text, attributes, URLs, JavaScript, and CSS each get their own escaper, chosen at compile time
+- **Unsafe places refused** - output in unquoted attributes, comments, tag names, or regular expressions is a compile error
+- **Explicit raw output** - `| raw` is the only way to skip escaping, so it is easy to find
+
+### **Built for serving**
+- **Fast** - about 4 µs for a typical 10 KiB page; values read in place, no conversion
+- **Live reload** - swap a theme in while serving; a theme with errors is refused and the running one stays
+- **Blocks that fail alone** - a block that cannot render is replaced by its fallback; the page still goes out
+- **Zero dependencies, no unsafe code**
+
+---
+
+## Installation
 
 ```toml
 [dependencies]
-luminess = "0.9"
+luminess = "0.10"
+
+# With the web-net integration:
+luminess = { version = "0.10", features = ["web-net"] }
 ```
 
 MSRV: Rust 1.85.
 
-## Quick start
+---
+
+## Quick Start
+
+Describe what templates may read, load the theme, render:
 
 ```rust
 use luminess::Engine;
 
-struct Post { title: String, url: String }
-struct Page { title: String, posts: Vec<Post> }
+struct Page { title: String, body: String }
+luminess::view!(Page as "page" { title: text, body: html });
 
-// Declare what templates may read. Field names are the struct's own.
-luminess::view!(Post as "post" { title: text, url: text });
-luminess::view!(Page as "page" { title: text, posts: list(object(Post)) });
-
-let engine = Engine::<Page>::builder()
-    .template("home", r#"<h1>{{ page.title }}</h1>
-<ul>
-{%- for post in page.posts %}
-  <li><a href="{{ post.url }}">{{ post.title }}</a></li>
-{%- endfor %}
-</ul>"#)
-    .build()?; // every template error, all at once
-
-let page = Page {
-    title: "News & notes".into(),
-    posts: vec![Post { title: "First".into(), url: "/first".into() }],
-};
-
-let mut out = Vec::new();
-engine.render("home", &page, &mut out)?;
+let engine = Engine::<Page>::from_dir("themes/default")?;   // every .html file below it
+let html = engine.render("home", &Page { title: "News".into(), body: "<p>Hi</p>".into() })?;
 ```
+
+One template, compiled once:
+
+```rust
+let card = luminess::Template::<Page>::new("<h1>{{ page.title }}</h1>")?;
+let html = card.render(&page)?;
+```
+
+One render that compiles on the spot, for scripts and tests:
+
+```rust
+let html = luminess::render("<b>{{ page.title }}</b>", &page)?;
+```
+
+### **Reload a theme while serving**
+
+```rust
+engine.reload_dir("themes/default")?;   // on error the running theme stays
+```
+
+### **Reuse one buffer per request**
+
+```rust
+let mut buf = Vec::with_capacity(16 * 1024);
+buf.clear();
+let report = engine.render_into("home", &page, &mut buf)?;
+for failure in report.failures() {
+    eprintln!("a block fell back: {failure}");
+}
+```
+
+### **More templates, limits, and filters**
+
+```rust
+let engine = Engine::<Page>::builder()
+    .directory("themes/default")?
+    .template("email", "Hello {{ page.title }}")
+    .max_output(1 << 20)
+    .build()?;
+```
+
+The type is named in `Engine::<Page>` on purpose: it is what the templates are checked against.
+
+---
 
 ## Templates
 
@@ -98,12 +163,12 @@ in seconds, UTC; `%Y %m %d %H %M %S %b %B %%`), `number` (groups digits:
 `Builder::filter`:
 
 ```rust
-use luminess::{Computed, Engine, Kind, Value};
+use luminess::{Answer, Engine, Kind, Value};
 
 let engine = Engine::<Order>::builder()
     .filter("money", &[Kind::Text], Kind::Text, |v, args| {
         let (Value::Int(cents), [Value::Text(cur)]) = (v, args) else { return Value::Absent.into() };
-        Computed::Text(format!("{}.{:02} {cur}", cents / 100, cents % 100))
+        Answer::Text(format!("{}.{:02} {cur}", cents / 100, cents % 100))
     })
     .template("total", r#"{{ order.cents | money("EUR") }}"#)
     .build()?;
@@ -138,16 +203,16 @@ version up.
 `{% include "name" %}` inserts a partial that sees the same values as the
 place it is included from. `{% include "card" with post %}` gives the partial
 one value as its root instead, named by the partial's own schema (add it
-with `template_with`). The partial is checked against the value it is given.
+with `template_with_schema`). The partial is checked against the value it is given.
 
 Load a whole theme from a folder; names are paths without the extension:
 
 ```rust
-let engine = Engine::<Page>::builder().directory("themes/default", "html")?.build()?;
+let engine = Engine::<Page>::from_dir("themes/default")?;
 // themes/default/partials/nav.html is "partials/nav"
 ```
 
-`template_with(name, source, schema)` compiles a template against its own
+`template_with_schema(name, source, schema)` compiles a template against its own
 schema, for a partial included `with` a value of that schema. Rendered by
 name, a template is always given the engine's view type, so one added this
 way can be rendered by name only when its schema reads that type the same
@@ -190,13 +255,13 @@ hand.
 the schema gives every field an id (its position), and `field` answers by id.
 
 ```rust
-use luminess::{Engine, FieldId, Schema, Value, View};
+use luminess::{Engine, Schema, Value, View};
 
 struct Product { name: String, price_cents: i64 }
 
 impl View for Product {
-    fn field(&self, id: FieldId) -> Value<'_> {
-        match id.index() {
+    fn field(&self, index: usize) -> Value<'_> {
+        match index {
             0 => Value::Text(&self.name),
             1 => Value::Int(self.price_cents),
             _ => Value::Absent,
@@ -206,7 +271,7 @@ impl View for Product {
 
 // A schema can be built at startup, from configuration or a plugin.
 let schema = Schema::build("product").text("name").int("price_cents").finish();
-let engine = Engine::<Product>::builder_with(schema)
+let engine = Engine::<Product>::with_schema(schema)
     .template("card", "<b>{{ product.name }}</b> {{ product.price_cents }}")
     .build()?;
 ```
@@ -218,10 +283,10 @@ Values are `Text`, `Html` (trusted markup), `Int`, `Float`, `Bool`, `Display`
 A schema can declare methods: values computed from arguments, such as a
 product's `variations.options("size")`. The compiler checks the argument
 count and kinds; `View::call` answers, returning a borrowed value or text
-built for the call (`Computed`):
+built for the call (`Answer`):
 
 ```rust
-use luminess::{Computed, FieldId, Kind, Schema, Value, View};
+use luminess::{Answer, Kind, Schema, Value, View};
 
 let schema = Schema::build("variations")
     .method("cheapest", &[], Kind::Int)
@@ -229,10 +294,10 @@ let schema = Schema::build("variations")
     .finish();
 
 impl View for Variations {
-    fn field(&self, _: FieldId) -> Value<'_> { Value::Absent }
+    fn field(&self, _: usize) -> Value<'_> { Value::Absent }
 
-    fn call<'s>(&'s self, id: FieldId, args: &[Value<'_>]) -> Computed<'s> {
-        match (id.index(), args) {
+    fn call<'s>(&'s self, index: usize, args: &[Value<'_>]) -> Answer<'s> {
+        match (index, args) {
             (0, []) => Value::Int(self.cheapest_cents()).into(),
             (1, [Value::Text(axis)]) => Value::List(self.options(axis)).into(),
             _ => Value::Absent.into(),
@@ -247,15 +312,15 @@ A schema marked `renders()` belongs to a value that writes its own markup
 when a template outputs it directly:
 
 ```rust
-use luminess::{Failed, FieldId, Output, Value, View};
+use luminess::{BlockError, Output, Value, View};
 
 struct Stock { level: Result<u32, String> }
 
 impl View for Stock {
-    fn field(&self, _: FieldId) -> Value<'_> { Value::Absent }
+    fn field(&self, _: usize) -> Value<'_> { Value::Absent }
 
-    fn render(&self, out: &mut Output<'_>) -> Result<(), Failed> {
-        let n = self.level.as_ref().map_err(|e| Failed::new(e.clone()))?;
+    fn render(&self, out: &mut Output<'_>) -> Result<(), BlockError> {
+        let n = self.level.as_ref().map_err(|e| BlockError::new(e.clone()))?;
         out.markup("<span class=\"stock\">");
         out.int(i64::from(*n));
         out.markup(" left</span>");
@@ -281,15 +346,43 @@ escapes the text for the place.
 ## Live reload
 
 ```rust
-// A theme changed on disk: compile the new set and swap it in.
-match engine.reload(Engine::<Page>::builder().template("home", new_source)) {
-    Ok(()) => {}                       // renders from now on use the new set
-    Err(errors) => eprintln!("{errors}"), // the running set stays
+// A theme changed on disk: compile it again and swap it in.
+if let Err(e) = engine.reload_dir("themes/default") {
+    eprintln!("{}", e.report());   // the running theme stays
 }
 ```
 
-`Engine` is cheap to clone and safe to share across threads. A render in
-flight finishes on the set it started with.
+For a theme built another way, build the new engine and swap it in with
+`engine.replace(new_engine)`: building and swapping are two steps, so a
+server can check a new theme fully before any of it goes live.
+`Engine` is cheap to clone and safe to share across threads; a reload
+reaches every clone, and a render in flight finishes on the theme it
+started with.
+
+## With web-net
+
+The `web-net` feature makes an `Engine` a [web-net](https://crates.io/crates/web-net)
+template engine, reading your page views directly:
+
+```toml
+luminess = { version = "0.10", features = ["web-net"] }  # web-net 0.10
+```
+
+```rust
+use luminess::{Engine, web::{ErrorView, Theme}};
+
+let pages = Engine::<Page>::builder().directory("themes/default")?.build()?;
+let errors = Engine::<ErrorView>::builder().directory("themes/default/errors", "html")?.build()?;
+let app = web_net::App::with_gate(gate).render(Theme::new(pages).with_error_pages(errors));
+```
+
+Route templates are resolved when the app is built, so a missing template
+stops it from starting; the ids stay valid across reloads. Error pages
+come from `error/<status>`, then `error`, then web-net's built-in page; they
+read `error.status`, `error.title`, `error.message`, `error.reference`, and `error.base`
+(the site's base path, for links: `{{ error.base }}/static/site.css`).
+Views must be `'static` (owned data or `Arc`). The default build of Luminess
+depends on nothing.
 
 ## Errors
 
@@ -300,8 +393,8 @@ flight finishes on the set it started with.
   nav:2:4: unknown filter `uper`, did you mean `upper`?; the filters are default, upper, lower, trim, length, truncate, join, first, last, replace, date, number, raw
 ```
 
-`CompileError::diagnostics` gives each one with its template, line,
-column, and source line. `CompileError::report` writes them in the style of
+`Error::diagnostics` gives each one with its template, line,
+column, and source line. `Error::report` writes them in the style of
 compiler errors, with a caret under the column:
 
 ```text
@@ -312,7 +405,7 @@ error: `page` (page) has no field `titel`, did you mean `title`?
   |             ^
 ```
 
-`CompileError::to_html` gives the same as an escaped `<pre>` block for a
+`Error::to_html` gives the same as an escaped `<pre>` block for a
 development error page (never for visitors: it shows template source).
 `Builder::check` compiles a theme and keeps nothing, for an editor or CI.
 
@@ -327,7 +420,7 @@ development error page (never for visitors: it shows template source).
 | compiled size of one template with its includes | about 1 million nodes | fixed |
 
 A render that passes `max_output` stops, removes what it wrote, and fails with
-`RenderErrorKind::TooLarge`.
+`ErrorKind::TooLarge`.
 
 ## Performance
 
@@ -366,38 +459,39 @@ do not contend.
 Measured on a shared Windows 11 desktop while it was quiet, the fastest of
 seven runs; `docs/PERFORMANCE.md` has the ranges and the 0.9.2 comparison.
 
-## With web-net
+## Status
 
-The `web-net` feature makes an `Engine` a [web-net](https://crates.io/crates/web-net)
-template engine, reading your page views directly:
-
-```toml
-luminess = { version = "0.9.2", features = ["web-net"] }  # web-net 0.8 or 0.9
-```
-
-```rust
-use luminess::{Engine, web::{ErrorView, Theme}};
-
-let pages = Engine::<Page>::builder().directory("themes/default", "html")?.build()?;
-let errors = Engine::<ErrorView>::builder().directory("themes/default/errors", "html")?.build()?;
-let app = web_net::App::with_gate(gate).render(Theme::new(pages).with_error_pages(errors));
-```
-
-Route templates are resolved when the app is built, so a missing template
-stops it from starting; the ids stay valid across `reload`. Error pages
-come from `error/<status>`, then `error`, then web-net's built-in page; they
-read `error.status`, `error.title`, `error.message`, and `error.reference`.
-Views must be `'static` (owned data or `Arc`). The default build of Luminess
-depends on nothing.
+**Current version:** `0.10.0`, the last planned 0.x reshaping of the API. `1.0.0` waits for its own decision; the checklist is in `dev/ROADMAP.md`. Until then the API may still change, with a migration note in `CHANGELOG.md` for every change.
 
 ## Documentation
 
 - [Template syntax](docs/SYNTAX.md)
-- [API overview](docs/API.md)
+- [API reference](docs/API.md): every public item, with examples, simplest first
 - [Security model](docs/SECURITY.md): what each escaper guarantees, and the known limits
-- [Performance](docs/PERFORMANCE.md)
-- API reference on [docs.rs](https://docs.rs/luminess)
+- [Performance](docs/PERFORMANCE.md): numbers, method, and the comparison with other engines
+- API documentation on [docs.rs](https://docs.rs/luminess)
 
-## License
+### **Version compatibility**
+- **Rust**: 1.85 or newer (edition 2024)
+- **Dependencies**: none by default; the `web-net` feature adds web-net 0.10
 
-Apache-2.0. See [LICENSE](LICENSE).
+### **Development setup**
+```bash
+git clone https://github.com/jamesgober/Luminess.git
+cd Luminess
+cargo test --all-features
+cargo bench --bench render
+```
+
+<hr>
+
+<div id="license">
+    <h2>License</h2>
+    <p><b>Luminess</b> is licensed under the <b>Apache License, Version 2.0</b>: see <a href="./LICENSE" title="Apache-2.0 License">LICENSE</a> or <a href="http://www.apache.org/licenses/LICENSE-2.0" title="Apache-2.0 License" target="_blank">apache.org/licenses/LICENSE-2.0</a>.</p>
+    <p>Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an <b>"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND</b>, either express or implied.</p>
+</div>
+
+<div align="center">
+  <h2></h2>
+  <sup>COPYRIGHT <small>&copy;</small> 2026 <strong>JAMES GOBER.</strong></sup>
+</div>

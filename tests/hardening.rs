@@ -4,7 +4,7 @@
 
 use std::time::{Duration, Instant};
 
-use luminess::{Engine, RenderErrorKind, Schema};
+use luminess::{Engine, ErrorKind, Schema};
 
 struct P {
     v: String,
@@ -24,7 +24,7 @@ fn engine(tpl: &str) -> Result<Engine<P>, String> {
 
 fn render(tpl: &str, v: &str, w: &str) -> Result<String, String> {
     let e = engine(tpl)?;
-    e.render_to_string(
+    e.render(
         "t",
         &P {
             v: v.into(),
@@ -113,39 +113,35 @@ fn url_common_forms_are_unchanged() {
         .build()
         .unwrap();
     assert_eq!(
-        e.render_to_string("abs", &page("a b", "example.com"))
-            .unwrap(),
+        e.render("abs", &page("a b", "example.com")).unwrap(),
         r#"<a href="https://example.com/x/a%20b">x</a>"#
     );
     assert_eq!(
-        e.render_to_string("mail", &page("me@example.com", ""))
-            .unwrap(),
+        e.render("mail", &page("me@example.com", "")).unwrap(),
         r#"<a href="mailto:me@example.com">x</a>"#
     );
     assert_eq!(
-        e.render_to_string("base", &page("y", "https://example.com"))
-            .unwrap(),
+        e.render("base", &page("y", "https://example.com")).unwrap(),
         r#"<a href="https://example.com/y">x</a>"#
     );
     assert_eq!(
-        e.render_to_string("rel", &page("a", "b")).unwrap(),
+        e.render("rel", &page("a", "b")).unwrap(),
         r#"<a href="/x/a:b">x</a>"#
     );
     assert_eq!(
-        e.render_to_string("query", &page("a&b", "")).unwrap(),
+        e.render("query", &page("a&b", "")).unwrap(),
         r#"<a href="?q=a%26b">x</a>"#
     );
     assert_eq!(
-        e.render_to_string("maybe", &page("", "1")).unwrap(),
+        e.render("maybe", &page("", "1")).unwrap(),
         r#"<a href="?q=1">x</a>"#
     );
     assert_eq!(
-        e.render_to_string("one", &page("https://example.com/a", ""))
-            .unwrap(),
+        e.render("one", &page("https://example.com/a", "")).unwrap(),
         r#"<a href="https://example.com/a">x</a>"#
     );
     assert_eq!(
-        e.render_to_string("one", &page(JS, "")).unwrap(),
+        e.render("one", &page(JS, "")).unwrap(),
         r##"<a href="#blocked">x</a>"##
     );
 }
@@ -343,12 +339,12 @@ fn many_literal_pieces_compile_in_linear_time() {
 fn a_template_with_another_schema_is_not_rendered_with_the_wrong_view() {
     let other = Schema::build("x").text("title").finish();
     let e = Engine::<P>::builder()
-        .template_with("card", "<h1>{{ x.title }}</h1>", other)
+        .template_with_schema("card", "<h1>{{ x.title }}</h1>", other)
         .template("t", "ok")
         .build()
         .unwrap();
     let err = e
-        .render_to_string(
+        .render(
             "card",
             &P {
                 v: "secret".into(),
@@ -356,16 +352,16 @@ fn a_template_with_another_schema_is_not_rendered_with_the_wrong_view() {
             },
         )
         .unwrap_err();
-    assert_eq!(err.kind(), RenderErrorKind::NotFound);
+    assert_eq!(err.kind(), ErrorKind::NotFound);
 
     // A schema the view does answer (a prefix of it) renders by name.
     let prefix = Schema::build("p").text("v").finish();
     let e = Engine::<P>::builder()
-        .template_with("short", "<b>{{ p.v }}</b>", prefix)
+        .template_with_schema("short", "<b>{{ p.v }}</b>", prefix)
         .build()
         .unwrap();
     assert_eq!(
-        e.render_to_string(
+        e.render(
             "short",
             &P {
                 v: "a".into(),
@@ -374,5 +370,173 @@ fn a_template_with_another_schema_is_not_rendered_with_the_wrong_view() {
         )
         .unwrap(),
         "<b>a</b>"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Declared kinds, SVG animation, CSS, and scripts the parser double-escapes
+// ---------------------------------------------------------------------------
+
+#[test]
+fn text_stays_text_whatever_a_filter_answers() {
+    use luminess::{Answer, Kind, Value};
+    let e = Engine::<P>::builder()
+        .filter("shout", &[], Kind::Text, |v, _| match v {
+            Value::Text(s) => Answer::Value(Value::Html(s)),
+            other => other.into(),
+        })
+        .template("t", "<p>{{ p.v | shout }}</p>")
+        .build()
+        .unwrap();
+    let out = e
+        .render(
+            "t",
+            &P {
+                v: "<img src=x onerror=alert(1)>".into(),
+                w: String::new(),
+            },
+        )
+        .unwrap();
+    assert_eq!(out, "<p>&lt;img src=x onerror=alert(1)&gt;</p>");
+}
+
+#[test]
+fn html_items_of_a_list_are_markup() {
+    use luminess::Html;
+    struct L {
+        items: Vec<Html>,
+        plain: Vec<String>,
+    }
+    luminess::view!(L as "l" { items: list(html), plain: list(text) });
+    let t = luminess::Template::<L>::new(
+        "{% for i in l.items %}{{ i }}{% endfor %}|{% for i in l.plain %}{{ i }}{% endfor %}",
+    )
+    .unwrap();
+    let out = t
+        .render(&L {
+            items: vec![Html::from("<b>x</b>")],
+            plain: vec!["<b>y</b>".into()],
+        })
+        .unwrap();
+    assert_eq!(out, "<b>x</b>|&lt;b&gt;y&lt;/b&gt;");
+}
+
+#[test]
+fn svg_animation_values_are_refused() {
+    for tpl in [
+        r#"<svg><a><animate attributeName="href" values="{{ p.v }}"/></a></svg>"#,
+        r#"<svg><a><set attributeName="href" to="{{ p.v }}"/></a></svg>"#,
+        r#"<svg><animateTransform from="{{ p.v }}"/></svg>"#,
+    ] {
+        let e = refused(tpl);
+        assert!(e.contains("animation"), "{tpl:?}: {e}");
+    }
+    // Other attributes of those elements are plain attributes.
+    assert_eq!(
+        ok(r#"<svg><animate dur="{{ p.v }}"/></svg>"#, "1s", ""),
+        r#"<svg><animate dur="1s"/></svg>"#
+    );
+}
+
+#[test]
+fn css_values_cannot_join_the_text_around_them() {
+    let _ = refused("<style>a { width: <{{ p.v }} }</style>");
+    let _ = refused("<title>a<{{ p.v }}</title>");
+    let e = refused("<style>a { width: {{ p.v }}* 2 }</style>");
+    assert!(e.contains("open a comment"), "{e}");
+    let _ = refused("<style>a { width: {{ p.v }}{{ p.w }} }</style>");
+    let _ = refused("<p style=\"width: {{ p.v }}*2\">x</p>");
+    // With a space, or after a branch, values are fine.
+    assert_eq!(
+        ok("<style>a { width: {{ p.v }} * 2 }</style>", "1/", ""),
+        "<style>a { width: 1/ * 2 }</style>"
+    );
+    assert_eq!(
+        ok(
+            "<style>a { color: {% if p.w %}{{ p.v }}{% endif %} }</style>",
+            "red",
+            "1"
+        ),
+        "<style>a { color: red }</style>"
+    );
+    // In a script a value is a literal, so `<` before it is fine.
+    assert_eq!(
+        ok("<script>if (i<{{ p.v }}) go();</script>", "3", ""),
+        "<script>if (i<\"3\") go();</script>"
+    );
+}
+
+#[test]
+fn double_escaped_script_content_is_followed() {
+    // `</script>` inside the double-escaped part does not end the element:
+    // the value after it is still script.
+    let out = ok(
+        "<script>
+<!--<script>
+<!--</script>
+{{ p.v }}
+</script>",
+        CODE,
+        "",
+    );
+    assert!(
+        out.contains(
+            "
+\"alert(document.domain)\"
+"
+        ),
+        "{out}"
+    );
+    // Output inside the double-escaped part is refused.
+    let e = refused("<script><!--<script> {{ p.v }} </script>--></script>");
+    assert!(e.contains("double-escaped"), "{e}");
+    // Branches in a script join after text holding `<`, unless one of them
+    // is part way into `<!--` or `<script`.
+    assert_eq!(
+        ok(
+            "<script>if (a<b) {% if p.w %}go(){% endif %}x({{ p.v }})</script>",
+            "1",
+            "1"
+        ),
+        "<script>if (a<b) go()x(\"1\")</script>"
+    );
+    let e = refused("<script>{% if p.w %}<!{% endif %}--<script> {{ p.v }}</script>");
+    assert!(e.contains("part way into `<!--`"), "{e}");
+    let e = refused("<script>{% if p.w %}<!--{% endif %}x = {{ p.v }};</script>");
+    assert!(e.contains("a script after `<!--` (escaped)"), "{e}");
+    // `-->` leaves the escaped states; output after it is followed again.
+    let out = ok(
+        "<script>
+<!--<script>
+-->
+var a = {{ p.v }};
+</script>",
+        CODE,
+        "",
+    );
+    assert!(out.contains("var a = \"alert(document.domain)\";"), "{out}");
+}
+
+#[test]
+fn nested_loops_in_a_script_compile_once() {
+    // A loop body in a script must end in the state it started in, as far
+    // as what follows is concerned, or each nesting level would compile its
+    // body twice: 2^20 times here.
+    let mut tpl = String::from("<script>var a = 1;");
+    for _ in 0..20 {
+        tpl.push_str("{% for i in p.v %}a = 1;");
+    }
+    for _ in 0..20 {
+        tpl.push_str("b = 2;{% endfor %}");
+    }
+    tpl.push_str("</script>");
+    let t = Instant::now();
+    let e = refused(&tpl);
+    assert!(e.contains("needs a list"), "{e}");
+    assert!(!e.contains("too large"), "{e}");
+    assert!(
+        t.elapsed() < Duration::from_millis(500),
+        "{:?}",
+        t.elapsed()
     );
 }

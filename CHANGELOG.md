@@ -6,6 +6,133 @@ All notable changes to `luminess` are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-11-13
+
+A simpler API, and the rest of the hardening begun in 0.9.3. Breaking:
+every change is listed under "Migrating from 0.9" below. Template syntax is
+unchanged, and output is the same as 0.9.3's byte for byte for every theme
+that compiles in both, except where a value declared text came back as
+markup (now escaped).
+
+### Added
+
+- `Engine::from_dir(dir)`: a whole theme in one call, every `.html` file
+  below `dir`, named by its path without the extension.
+- `Engine::reload_dir(dir)`: compile the folder again and swap it in; on any
+  error the running theme stays.
+- `Template<V>`: one compiled template (`Template::new(source)`,
+  `render(&view)`, `render_into(&view, &mut out)`) for cards, emails, and
+  fragments.
+- `luminess::render(source, &view)`: compile and render in one call, for
+  scripts and tests.
+- `Engine::replace(engine)` and `Engine::contains(name)`: build and check a
+  new theme fully, then swap it in.
+- `Builder::directory_with_extension(dir, extension)`.
+- `ErrorKind::Io`: a theme folder or file that cannot be read.
+- `Html`: markup the application trusts, for the items of a `list(html)`
+  field.
+- `docs/API.md` rewritten: every public item with its parameters, errors,
+  and examples, simplest first; every example runs as a doctest.
+
+### Changed
+
+- One error type, `Error`, for loading, compiling, and rendering, so `?`
+  works from `from_dir` to `render`. `Error::kind()` says which
+  (`ErrorKind` is `#[non_exhaustive]`); `diagnostics()`, `report()`, and
+  `to_html()` are on it for every kind.
+- `Engine::render` returns the page as a `String`, the common case;
+  `render_into` appends to a buffer you keep.
+- Views take a field's position as a plain `usize` instead of `FieldId`.
+- Renamed: `Shaped` to `HasSchema`, `Computed` to `Answer`, `Failed` to
+  `BlockError`, `template_with` to `template_with_schema`, `builder_with`
+  to `with_schema`.
+- `SchemaBuilder::object` and `Kind::Object` take a `Schema`;
+  `Kind::object_of::<T>()` still builds a type's schema the first time it
+  is needed, so types can refer to themselves.
+- The equivalence tests and the `same_output` fuzz target compare against
+  0.9.3.
+- A value is written as markup only where the schema declared it `html`. A
+  field, method, or filter declared text that answers `Value::Html` is
+  escaped; so is an `html` field reached through `default` on a text value.
+- A `list(html)` field holds `Vec<Html>`; `view!` refuses one of plain
+  strings at compile time.
+- `Value`, `Kind`, and `Answer` are `#[non_exhaustive]`.
+- Refused at compile time: output in SVG animation values (`values`, `to`,
+  `from`, `by` on `animate`, `set`, `animateMotion`, `animateTransform`),
+  output right after `<` in a raw-text element other than a script, and
+  output in a script the HTML parser reads as double-escaped (after `<!--`
+  and `<script`). Such a script's `</script>` no longer ends the tracker's
+  view of it, as it does not end the element. Branches in a script must
+  also agree on whether they end part way into `<!--`, `-->`, or `<script`.
+- In CSS, a literal `*` right after an output, and two outputs side by
+  side, are compile errors: a value could open a comment with them.
+- The `web-net` feature uses web-net 0.10. `web::ErrorView` has `base`, the
+  site's base path (`""` at the root, `/blog` in a folder), so error pages
+  of a site installed in a folder link inside it:
+  `{{ error.base }}/static/site.css`.
+- With the `web-net` feature, a render stops at web-net's output budget
+  instead of building the whole page first.
+- Text comparisons in conditions copy nothing, and calls with up to four
+  arguments allocate nothing: about 45 ns less per comparison.
+
+### Removed
+
+- `Templates`, `Engine::new`, `Engine::templates`, `Engine::swap`,
+  `Engine::reload`, `Builder::new`, `Builder::compile`: an `Engine` is the
+  compiled set, and `replace` swaps one in.
+- `CompileError`, `RenderError`, `RenderErrorKind`, `FieldId`, `SchemaRef`.
+- `Rendered::is_complete` and `Rendered::first_failure`: use `failures()`.
+
+### Migrating from 0.9
+
+| 0.9 | 0.10 |
+|---|---|
+| `Engine::<V>::builder().directory(dir, "html")?.build()?` | `Engine::<V>::from_dir(dir)?` |
+| `Builder::directory(dir, "html")` (an `io::Error`) | `Builder::directory(dir)` (a `luminess::Error`) |
+| `Builder::directory(dir, "txt")` | `Builder::directory_with_extension(dir, "txt")` |
+| `engine.render(name, &view, &mut out)` | `engine.render_into(name, &view, &mut out)` |
+| `engine.render_to_string(name, &view)` | `engine.render(name, &view)` |
+| `engine.reload(builder)` | `engine.replace(builder.build()?)`, or `engine.reload_dir(dir)` |
+| `builder.compile()` and `Engine::new(templates)` | `builder.build()` |
+| `engine.templates()`, `Templates`, `engine.swap(templates)` | an `Engine` is the set: `engine.replace(other)`, `engine.contains(name)` |
+| `Builder::new(schema)`, `Engine::builder_with(schema)` | `Engine::with_schema(schema)` |
+| `Builder::template_with(name, source, schema)` | `Builder::template_with_schema(name, source, schema)` |
+| `CompileError`, `RenderError`, `RenderErrorKind` | `Error` and `ErrorKind` (`Compile`, `Io`, `NotFound`, `TooLarge`) |
+| `RenderError::template()`, `CompileError::diagnostics()` | `Error::template()`, `Error::diagnostics()` |
+| `Shaped` | `HasSchema` |
+| `Computed` (`Computed::Value`, `Computed::Text`) | `Answer` (`Answer::Value`, `Answer::Text`) |
+| `Failed` | `BlockError` |
+| `fn field(&self, id: FieldId)` with `match id.index()` | `fn field(&self, index: usize)` with `match index` |
+| `fn call(&self, id: FieldId, args)` | `fn call(&self, index: usize, args)` |
+| `Schema::field(name) -> Option<(FieldId, &Kind)>` | `Schema::field(name) -> Option<(usize, &Kind)>` |
+| `SchemaRef`, `SchemaBuilder::object(name, impl Into<SchemaRef>)` | `SchemaBuilder::object(name, Schema)`; `Kind::Object(Schema)` |
+| `Rendered::is_complete()` | `rendered.failures().is_empty()` |
+| `Rendered::first_failure()` | `rendered.failures().first()` |
+| `match value { ... }` on `Value`, `Kind`, `Answer` covering every variant | add a `_` arm |
+| `items: list(html)` holding `Vec<String>` | `Vec<luminess::Html>` (`Html::from(s)`) |
+| a filter or method declared `Kind::Text` that answers `Value::Html` | declare it `Kind::Html` |
+| the `web-net` feature with web-net 0.8 or 0.9 | web-net 0.10 |
+| error page links written from the root (`/static/site.css`) | `{{ error.base }}/static/site.css` |
+
+A view written by hand, before and after:
+
+```rust
+// 0.9
+impl View for Post {
+    fn field(&self, id: FieldId) -> Value<'_> {
+        match id.index() { 0 => Value::Text(&self.title), _ => Value::Absent }
+    }
+}
+// 0.10
+impl View for Post {
+    fn field(&self, index: usize) -> Value<'_> {
+        match index { 0 => Value::Text(&self.title), _ => Value::Absent }
+    }
+}
+```
+
+Views made with `view!` need no change.
+
 ## [0.9.3] - 2026-11-11
 
 A security release, and faster rendering. Upgrade from any earlier 0.9 or

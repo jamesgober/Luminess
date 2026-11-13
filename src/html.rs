@@ -19,6 +19,10 @@ pub(crate) enum AttrKind {
     Style,
     /// HTML parsed again after entity decoding: `srcdoc`. Never written to.
     Html,
+    /// The value of an SVG animation (`values`, `to`, `from`, `by` on
+    /// `animate`, `set`, and their kin), which may set any attribute,
+    /// an `href` too. Never written to.
+    Animation,
 }
 
 /// How an output in a URL attribute value is escaped, from the least strict
@@ -259,7 +263,103 @@ pub(crate) enum Ctx {
         elem: RawElem,
         matched: u8,
         sub: Sub,
+        /// For a script: the HTML parser's escaped states.
+        script: ScriptData,
     },
+}
+
+/// The HTML parser's view of a script's content. After `<!--` it is
+/// "escaped"; a `<script` there makes it "double escaped", where
+/// `</script>` does not end the element, until `-->`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ScriptData {
+    /// 0: plain, 1: escaped, 2: double escaped.
+    state: u8,
+    /// The last bytes read that may still complete a pattern, lowercase,
+    /// newest last, zeros before them.
+    recent: [u8; 8],
+}
+
+impl ScriptData {
+    const START: Self = Self {
+        state: 0,
+        recent: [0; 8],
+    };
+
+    /// `true` when the bytes read, then `c`, end with `pat`.
+    fn ends(&self, c: u8, pat: &[u8]) -> bool {
+        let n = pat.len();
+        pat[n - 1] == c && self.recent[8 - (n - 1)..] == pat[..n - 1]
+    }
+
+    fn step(mut self, c: u8) -> Self {
+        let c = c.to_ascii_lowercase();
+        let delim = is_space(c) || c == b'/' || c == b'>';
+        self.state = match self.state {
+            0 if self.ends(c, b"<!--") => 1,
+            1 | 2 if self.ends(c, b"-->") => 0,
+            1 if delim && self.recent[1..] == *b"<script" => 2,
+            2 if delim && self.recent == *b"</script" => 1,
+            s => s,
+        };
+        self.recent.rotate_left(1);
+        self.recent[7] = c;
+        // Keep only what may still complete a pattern, so that two states
+        // that read what follows the same way are equal: a loop body then
+        // ends where it started, and is compiled once.
+        let k = self.pending().len();
+        self.recent[..8 - k].fill(0);
+        self
+    }
+
+    fn double(self) -> bool {
+        self.state == 2
+    }
+
+    /// The bytes just read that begin a pattern this state looks for: what
+    /// a following byte could complete.
+    fn pending(&self) -> &[u8] {
+        let pats: &[&[u8]] = match self.state {
+            0 => &[b"<!--"],
+            1 => &[b"-->", b"<script"],
+            _ => &[b"-->", b"</script"],
+        };
+        let mut k = 0;
+        for pat in pats {
+            // The delimiter after `<script` is not part of the pattern, so
+            // all of it may be pending.
+            let most = if pat.ends_with(b"t") {
+                pat.len()
+            } else {
+                pat.len() - 1
+            };
+            for n in (k + 1..=most).rev() {
+                if self.recent[8 - n..] == pat[..n] {
+                    k = n;
+                    break;
+                }
+            }
+        }
+        &self.recent[8 - k..]
+    }
+
+    /// Where two branches meet: the same state, and the same part of a
+    /// pattern pending, so what follows reads the same after either.
+    fn join(self, other: Self) -> Option<Self> {
+        if self == other {
+            return Some(self);
+        }
+        let pending = self.pending();
+        if self.state != other.state || pending != other.pending() {
+            return None;
+        }
+        let mut recent = [0; 8];
+        recent[8 - pending.len()..].copy_from_slice(pending);
+        Some(Self {
+            state: self.state,
+            recent,
+        })
+    }
 }
 
 /// The HTML tokenizer's comment states: a comment ends at `-->`, at `--!>`,
@@ -301,8 +401,19 @@ fn raw_elem(tag: &Name) -> Option<RawElem> {
     RawElem::ALL.into_iter().find(|e| tag.is(e.name()))
 }
 
-fn attr_kind(attr: &Name) -> AttrKind {
+fn attr_kind(tag: &Name, attr: &Name) -> AttrKind {
     let n = attr.get();
+    let animates = [
+        b"animate".as_slice(),
+        b"set",
+        b"animatemotion",
+        b"animatetransform",
+    ]
+    .iter()
+    .any(|t| tag.is(t));
+    if animates && matches!(n, b"values" | b"to" | b"from" | b"by") && !attr.long {
+        return AttrKind::Animation;
+    }
     if attr.long {
         // A long name is classified by its prefix only.
         if n.starts_with(b"on") {
@@ -329,7 +440,7 @@ fn sub_for(kind: AttrKind) -> Sub {
         AttrKind::Url => Sub::Url(Url::START),
         AttrKind::Script => Sub::Js(Js::START),
         AttrKind::Style => Sub::Css(Css::Code),
-        AttrKind::Text | AttrKind::Html => Sub::None,
+        AttrKind::Text | AttrKind::Html | AttrKind::Animation => Sub::None,
     }
 }
 
@@ -388,6 +499,10 @@ impl Sub {
             // output after them is never under-escaped.
             (Self::Url(a), Self::Url(b)) => Some(Self::Url(a.join(b))),
             (Self::Js(a), Self::Js(b)) => a.join(b).map(Self::Js),
+            // Right after an output is the stricter of the two.
+            (Self::Css(Css::Code | Css::AfterValue), Self::Css(Css::Code | Css::AfterValue)) => {
+                Some(Self::Css(Css::AfterValue))
+            }
             _ => None,
         }
     }
@@ -396,6 +511,7 @@ impl Sub {
         match self {
             Self::Url(url) => Self::Url(url.after_output()),
             Self::Js(js) => Self::Js(js.after_value()),
+            Self::Css(Css::Code) => Self::Css(Css::AfterValue),
             other => other,
         }
     }
@@ -437,6 +553,9 @@ impl Sub {
                 attr,
             },
             Css::Str(_) => Slot::Css { string: true, attr },
+            Css::AfterValue | Css::Broken => {
+                Slot::Refused("two CSS values side by side; put a space between them")
+            }
             Css::Slash | Css::Esc | Css::StrEsc(_) => {
                 Slot::Refused("output right after `/` or a backslash in CSS")
             }
@@ -460,6 +579,7 @@ impl Ctx {
                     RawElem::Style => Sub::Css(Css::Code),
                     _ => Sub::None,
                 },
+                script: ScriptData::START,
             },
             None => Self::Text,
         }
@@ -546,7 +666,7 @@ impl Ctx {
             },
             Self::BeforeValue { tag, attr } => match c {
                 b'"' | b'\'' => {
-                    let kind = attr_kind(&attr);
+                    let kind = attr_kind(&tag, &attr);
                     Self::Value {
                         tag,
                         quote: c,
@@ -611,12 +731,24 @@ impl Ctx {
                 elem: RawElem::Plaintext,
                 ..
             } => self,
-            Self::Raw { elem, matched, sub } => {
+            Self::Raw {
+                elem,
+                matched,
+                sub,
+                script,
+            } => {
                 // The element ends at `</name` whatever the script or style
-                // inside it is doing: that is how the HTML parser reads it.
+                // inside it is doing: that is how the HTML parser reads it,
+                // except in a script's double-escaped state.
                 let name = elem.name();
                 let m = usize::from(matched);
-                if m == name.len() + 2 {
+                let double = script.double();
+                let script = if elem == RawElem::Script {
+                    script.step(c)
+                } else {
+                    script
+                };
+                if m == name.len() + 2 && !double {
                     if c == b'>' {
                         return Self::Text;
                     }
@@ -641,6 +773,7 @@ impl Ctx {
                     elem,
                     matched,
                     sub: sub.step(c, false),
+                    script,
                 }
             }
         }
@@ -654,6 +787,9 @@ impl Ctx {
                 (AttrKind::Html, _) => {
                     Slot::Refused("output inside `srcdoc` is refused: it is parsed as HTML again")
                 }
+                (AttrKind::Animation, _) => Slot::Refused(
+                    "output in an SVG animation value is refused: it can set any attribute, an `href` too",
+                ),
                 (_, Sub::Url(url)) => Slot::Url(url.part),
                 (_, Sub::Js(js)) => Sub::js_slot(js, true),
                 (_, Sub::Css(css)) => Sub::css_slot(css, true),
@@ -664,6 +800,14 @@ impl Ctx {
             },
             Self::Raw { matched, .. } if matched >= 2 => {
                 Slot::Refused("output inside what looks like an end tag")
+            }
+            Self::Raw { script, .. } if script.double() => Slot::Refused(
+                "output in a script the HTML parser reads as double-escaped (after `<!--` and `<script`), where `</script>` does not end it",
+            ),
+            // A value starting with `/` would form an end tag; in a script
+            // the value is a literal, which cannot start with `/`.
+            Self::Raw { elem, matched, .. } if matched == 1 && elem != RawElem::Script => {
+                Slot::Refused("output right after `<` in a raw-text element")
             }
             Self::Raw { sub, .. } => match sub {
                 Sub::Js(js) => Sub::js_slot(js, false),
@@ -687,6 +831,20 @@ impl Ctx {
     }
 
     fn take_error(&mut self) -> Option<&'static str> {
+        if let Self::Value {
+            sub: sub @ Sub::Css(Css::Broken),
+            ..
+        }
+        | Self::Raw {
+            sub: sub @ Sub::Css(Css::Broken),
+            ..
+        } = self
+        {
+            *sub = Sub::Css(Css::Code);
+            return Some(
+                "`*` right after an output in CSS could open a comment with the value; put a space before it",
+            );
+        }
         if let Self::Value {
             sub: Sub::Url(url), ..
         } = self
@@ -720,10 +878,16 @@ impl Ctx {
                 kind,
                 sub: sub.after_output(),
             },
-            Self::Raw { elem, matched, sub } => Self::Raw {
+            Self::Raw {
+                elem,
+                matched,
+                sub,
+                script,
+            } => Self::Raw {
                 elem,
                 matched,
                 sub: sub.after_output(),
+                script,
             },
             other => other,
         }
@@ -760,14 +924,22 @@ impl Ctx {
                     elem,
                     matched,
                     sub: a,
+                    script,
                 },
                 Self::Raw {
                     elem: e2,
                     matched: m2,
                     sub: b,
+                    script: s2,
                 },
             ) if elem == e2 && matched == m2 => {
-                a.join(b).map(|sub| Self::Raw { elem, matched, sub })
+                let script = script.join(s2)?;
+                a.join(b).map(|sub| Self::Raw {
+                    elem,
+                    matched,
+                    sub,
+                    script,
+                })
             }
             // Between attributes: a branch that added a bare attribute
             // (`{% if x %}hidden{% endif %}`) ends in its name. Joining to the
@@ -792,6 +964,23 @@ impl Ctx {
     /// A short description for error messages.
     pub(crate) fn describe(&self) -> &'static str {
         match self {
+            Self::Raw {
+                elem: RawElem::Script,
+                script,
+                ..
+            } if script.state == 1 => "a script after `<!--` (escaped)",
+            Self::Raw {
+                elem: RawElem::Script,
+                script,
+                ..
+            } if script.state == 2 => "a script after `<!--` and `<script` (double-escaped)",
+            Self::Raw {
+                elem: RawElem::Script,
+                script,
+                ..
+            } if !script.pending().is_empty() => {
+                "a script part way into `<!--`, `-->`, or `<script`"
+            }
             Self::Text => "HTML text",
             Self::Lt | Self::TagName { .. } | Self::EndTag => "a tag name",
             Self::Tag { .. } | Self::AttrName { .. } | Self::AfterAttrName { .. } => "a tag",
