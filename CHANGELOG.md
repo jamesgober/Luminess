@@ -6,7 +6,7 @@ All notable changes to `luminess` are documented here. The format follows
 
 ## [Unreleased]
 
-## [0.10.0] - 2026-11-12
+## [0.10.0] - 2026-11-13
 
 A simpler API, and the rest of the hardening begun in 0.9.3. Breaking:
 every change is listed under "Migrating from 0.9" below. Template syntax is
