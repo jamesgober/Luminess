@@ -91,7 +91,7 @@ The rebuild. Nothing of 0.1's API remains.
 ## Before 1.0 (James decides)
 
 - [ ] James reviews `dev/SYNTAX.md` (frozen in 0.9.0); any changes he asks for land first, with a migration note.
-- [ ] The web-net integration works end to end: web-net's `Render` trait carries a typed view (proposal sent to the web-net session on 2026-11-08), and Luminess implements it behind an optional `web-net` feature.
+- [ ] The web-net integration works end to end: web-net's `Render` trait carries a typed view (proposed to web-net on 2026-11-08), and Luminess implements it behind an optional `web-net` feature.
 - [ ] 24-hour fuzz runs of `compile` and `escape` with no findings.
 - [ ] A benchmark run on a quiet machine, and the numbers in the README and `docs/PERFORMANCE.md` updated.
 - [ ] One real theme (a site's layouts, partials, and blocks) built on it, and any rough edges it finds fixed.
