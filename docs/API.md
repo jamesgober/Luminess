@@ -52,7 +52,7 @@ here is a complete program, compiled and run as a doctest.
 [dependencies]
 luminess = "0.10"
 # with the web-net integration:
-# luminess = { version = "0.10", features = ["web-net"] }  # web-net 0.10
+# luminess = { version = "0.10", features = ["web-net"] }  # web-net 0.10 or 0.11
 ```
 
 Everything public is at the crate root, plus the `escape` module, the

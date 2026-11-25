@@ -365,7 +365,7 @@ The `web-net` feature makes an `Engine` a [web-net](https://crates.io/crates/web
 template engine, reading your page views directly:
 
 ```toml
-luminess = { version = "0.10", features = ["web-net"] }  # web-net 0.10
+luminess = { version = "0.10", features = ["web-net"] }  # web-net 0.10 or 0.11
 ```
 
 ```rust
@@ -461,7 +461,7 @@ seven runs; `docs/PERFORMANCE.md` has the ranges and the 0.9.2 comparison.
 
 ## Status
 
-**Current version:** `0.10.0`, the last planned 0.x reshaping of the API. `1.0.0` waits for its own decision; the checklist is in `dev/ROADMAP.md`. Until then the API may still change, with a migration note in `CHANGELOG.md` for every change.
+**Current version:** `0.10.1`, the last planned 0.x reshaping of the API. `1.0.0` waits for its own decision; the checklist is in `dev/ROADMAP.md`. Until then the API may still change, with a migration note in `CHANGELOG.md` for every change.
 
 ## Documentation
 
@@ -473,7 +473,7 @@ seven runs; `docs/PERFORMANCE.md` has the ranges and the 0.9.2 comparison.
 
 ### **Version compatibility**
 - **Rust**: 1.85 or newer (edition 2024)
-- **Dependencies**: none by default; the `web-net` feature adds web-net 0.10
+- **Dependencies**: none by default; the `web-net` feature adds web-net 0.10 or 0.11
 
 ### **Development setup**
 ```bash
